@@ -8,10 +8,16 @@ import { prisma } from "./prisma";
 
 export interface AuthUser {
   userId: string;
+  /** Company this request acts on. Every tenant-scoped query must filter by this. */
   tenantId: string;
+  /** Company the user's own account lives in. Differs from tenantId only when an owner switches company. */
+  homeTenantId: string;
   role: string;
   email: string;
 }
+
+/** Header the dashboard's company switcher sends to pick the active company. */
+export const TENANT_HEADER = "x-tenant-id";
 
 export interface AuthedDevice {
   deviceId: string;
@@ -86,7 +92,7 @@ export async function burnPasswordCheck(plain: string): Promise<void> {
 export const ACCESS_TOKEN_TTL = process.env.JWT_ACCESS_EXPIRES_IN ?? "15m";
 export const REFRESH_TOKEN_TTL = process.env.JWT_REFRESH_EXPIRES_IN ?? env.jwtExpiresIn;
 
-type AccessClaims = AuthUser & { kind: "access" };
+type AccessClaims = Omit<AuthUser, "homeTenantId"> & { kind: "access" };
 type RefreshClaims = { kind: "refresh"; userId: string; tenantId: string; jti: string; exp: number };
 
 /**
@@ -97,7 +103,7 @@ function refreshKey(passwordHash: string): string {
   return createHash("sha256").update(env.jwtSecret).update(":refresh:").update(passwordHash).digest("hex");
 }
 
-export function signUserToken(u: AuthUser): string {
+export function signUserToken(u: Omit<AuthUser, "homeTenantId">): string {
   const claims: AccessClaims = {
     userId: u.userId,
     tenantId: u.tenantId,
@@ -180,6 +186,11 @@ function bearer(req: Request): string | null {
  * The user is re-read on every request, so a deactivated user is locked out and
  * a role change takes effect immediately rather than when the token expires.
  * `req.auth` always reflects the database, never stale token claims.
+ *
+ * Company switching: an owner (SUPER_ADMIN) runs every company, so they may send
+ * `X-Tenant-Id` to act on any existing company; `req.auth.tenantId` becomes that
+ * company and every route scoped by it follows. Anyone else may only send their
+ * own company's id (or nothing); any other value is refused, never ignored.
  */
 export function requireUser(...roles: string[]) {
   return async (req: Request, res: Response, next: NextFunction) => {
@@ -204,7 +215,16 @@ export function requireUser(...roles: string[]) {
       if (roles.length && !roles.includes(user.role)) {
         return res.status(403).json({ error: "Insufficient role" });
       }
-      req.auth = { userId: user.id, tenantId: user.tenantId, role: user.role, email: user.email };
+
+      let tenantId = user.tenantId;
+      const requested = req.header(TENANT_HEADER)?.trim();
+      if (requested && requested !== user.tenantId) {
+        if (user.role !== Role.SuperAdmin) return res.status(403).json({ error: "No access to that company" });
+        const tenant = await prisma.tenant.findUnique({ where: { id: requested }, select: { id: true } });
+        if (!tenant) return res.status(404).json({ error: "Company not found" });
+        tenantId = tenant.id;
+      }
+      req.auth = { userId: user.id, tenantId, homeTenantId: user.tenantId, role: user.role, email: user.email };
       next();
     } catch (e) {
       next(e);

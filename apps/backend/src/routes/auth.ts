@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import { loginSchema } from "@emptrack/shared";
+import { loginSchema, Role } from "@emptrack/shared";
 import { prisma } from "../prisma";
 import {
   burnPasswordCheck,
@@ -113,11 +113,31 @@ authRouter.post("/logout", async (req, res, next) => {
 authRouter.get("/me", requireUser(), async (req, res, next) => {
   try {
     const user = await prisma.user.findFirst({
-      where: { id: req.auth!.userId, tenantId: req.auth!.tenantId },
+      where: { id: req.auth!.userId, tenantId: req.auth!.homeTenantId },
       include: { tenant: { select: { id: true, name: true, slug: true } } },
     });
     if (!user) return res.status(404).json({ error: "Not found" });
-    res.json({ ...publicUser(user), tenant: user.tenant });
+    const activeTenant =
+      req.auth!.tenantId === user.tenantId
+        ? user.tenant
+        : await prisma.tenant.findUnique({ where: { id: req.auth!.tenantId }, select: { id: true, name: true, slug: true } });
+    // `tenant` is the account's home company; `activeTenant` is what X-Tenant-Id selected.
+    res.json({ ...publicUser(user), tenant: user.tenant, activeTenant });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// Companies the caller can switch to with X-Tenant-Id: every company for the
+// owner, otherwise just their own. Feeds the dashboard's company switcher.
+authRouter.get("/tenants", requireUser(), async (req, res, next) => {
+  try {
+    const select = { id: true, name: true, slug: true } as const;
+    const tenants =
+      req.auth!.role === Role.SuperAdmin
+        ? await prisma.tenant.findMany({ select, orderBy: { name: "asc" } })
+        : await prisma.tenant.findMany({ where: { id: req.auth!.homeTenantId }, select });
+    res.json(tenants.map((t) => ({ ...t, home: t.id === req.auth!.homeTenantId })));
   } catch (e) {
     next(e);
   }
@@ -130,7 +150,7 @@ authRouter.post("/change-password", requireUser(), async (req, res, next) => {
     const parsed = changePasswordSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
 
-    const user = await prisma.user.findFirst({ where: { id: req.auth!.userId, tenantId: req.auth!.tenantId } });
+    const user = await prisma.user.findFirst({ where: { id: req.auth!.userId, tenantId: req.auth!.homeTenantId } });
     if (!user) return res.status(404).json({ error: "Not found" });
     if (!(await verifyPassword(parsed.data.currentPassword, user.passwordHash))) {
       return res.status(401).json({ error: "Current password is incorrect" });

@@ -8,8 +8,8 @@ import { assignableRoles, hashPassword, outranks, requireRoleAtLeast, requireUse
 
 export const usersRouter = Router();
 
-// Every query below is scoped by req.auth.tenantId, including the owner's:
-// user management never crosses companies. Tenant-wide admin lives in tenants.ts.
+// Every query below is scoped by req.auth.tenantId, the active company. For most
+// users that is their own; an owner can switch it with X-Tenant-Id (see requireUser).
 
 const ALL_ROLES = [Role.SuperAdmin, Role.Admin, Role.Manager, Role.Employee] as const;
 

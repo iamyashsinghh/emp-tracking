@@ -74,6 +74,13 @@ const fakeUser = {
 };
 Object.defineProperty(prisma, "user", { value: fakeUser, configurable: true });
 Object.defineProperty(prisma, "$transaction", { value: (ps: Promise<unknown>[]) => Promise.all(ps), configurable: true });
+Object.defineProperty(prisma, "tenant", {
+  value: {
+    findUnique: async (a: any) => tenants.find((t) => t.id === a.where.id) ?? null,
+    findMany: async (a: any) => tenants.filter((t) => !a?.where?.id || t.id === a.where.id),
+  },
+  configurable: true,
+});
 Object.defineProperty(prisma, "device", {
   value: { create: async (a: any) => ({ id: "d1", ...a.data }), findFirst: async () => null }, configurable: true,
 });
@@ -115,10 +122,14 @@ before(async () => {
 after(() => server.close());
 beforeEach(seed);
 
-async function call(method: string, path: string, body?: unknown, token?: string) {
+async function call(method: string, path: string, body?: unknown, token?: string, tenant?: string) {
   const res = await fetch(base + path, {
     method,
-    headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    headers: {
+      "content-type": "application/json",
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(tenant ? { "x-tenant-id": tenant } : {}),
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
@@ -310,5 +321,37 @@ describe("users: role enforcement", () => {
     const admin = await login("admin@acme.co");
     assert.equal((await call("POST", "/api/users/emp/password", { password: "brandnew123" }, admin.accessToken)).status, 204);
     assert.equal((await call("POST", "/api/auth/refresh", { refreshToken: emp.refreshToken })).status, 401);
+  });
+});
+
+describe("company switching (X-Tenant-Id)", () => {
+  it("lets the owner act on another company", async () => {
+    const s = await login("owner@acme.co");
+    const list = await call("GET", "/api/users", undefined, s.accessToken, "t2");
+    assert.equal(list.status, 200);
+    assert.ok(list.body.every((u: any) => ["g-admin", "g-emp", "dup2"].includes(u.id)));
+    const created = await call("POST", "/api/users",
+      { name: "X", email: "x@globex.co", password: "password123", role: Role.Admin }, s.accessToken, "t2");
+    assert.equal(created.status, 201);
+    assert.equal(users.find((u) => u.id === created.body.id)!.tenantId, "t2");
+    const me = await call("GET", "/api/auth/me", undefined, s.accessToken, "t2");
+    assert.equal(me.body.tenant.id, "t1");
+    assert.equal(me.body.activeTenant.id, "t2");
+  });
+  it("refuses the header for anyone but the owner, unless it names their own company", async () => {
+    const s = await login("admin@acme.co");
+    assert.equal((await call("GET", "/api/users", undefined, s.accessToken, "t2")).status, 403);
+    assert.equal((await call("GET", "/api/users", undefined, s.accessToken, "t1")).status, 200);
+  });
+  it("404s an unknown company", async () => {
+    const s = await login("owner@acme.co");
+    assert.equal((await call("GET", "/api/users", undefined, s.accessToken, "nope")).status, 404);
+  });
+  it("lists switchable companies", async () => {
+    const owner = await login("owner@acme.co");
+    const admin = await login("admin@acme.co");
+    assert.equal((await call("GET", "/api/auth/tenants", undefined, owner.accessToken)).body.length, 2);
+    const mine = (await call("GET", "/api/auth/tenants", undefined, admin.accessToken)).body;
+    assert.deepEqual(mine.map((t: any) => [t.id, t.home]), [["t1", true]]);
   });
 });
