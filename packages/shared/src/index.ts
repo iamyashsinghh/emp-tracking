@@ -131,3 +131,112 @@ export const mediaUploadResponseSchema = z.object({
   requiredHeaders: z.record(z.string()),
 });
 export type MediaUploadResponse = z.infer<typeof mediaUploadResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Admin input schemas (shared by backend validation and dashboard forms)
+// ---------------------------------------------------------------------------
+
+export const createTenantSchema = z.object({
+  name: z.string().min(1),
+  slug: z.string().min(1).regex(/^[a-z0-9-]+$/, "lowercase letters, digits and hyphens only"),
+});
+export type CreateTenantInput = z.infer<typeof createTenantSchema>;
+
+export const createUserSchema = z.object({
+  name: z.string().min(1),
+  email: z.string().email(),
+  password: z.string().min(8),
+  role: z.enum([Role.Admin, Role.Manager, Role.Employee]).default(Role.Employee),
+});
+export type CreateUserInput = z.infer<typeof createUserSchema>;
+
+/** Date-range + optional subject filters shared by every reporting query. */
+export const reportQuerySchema = z.object({
+  from: z.string().optional(),
+  to: z.string().optional(),
+  userId: z.string().optional(),
+  deviceId: z.string().optional(),
+});
+export type ReportQuery = z.infer<typeof reportQuerySchema>;
+
+// ---------------------------------------------------------------------------
+// Response DTOs (the exact shapes the API returns and the dashboard consumes)
+// ---------------------------------------------------------------------------
+
+export interface TenantDTO {
+  id: string;
+  name: string;
+  slug: string;
+  createdAt: string;
+}
+
+export interface UserDTO {
+  id: string;
+  tenantId: string;
+  name: string;
+  email: string;
+  role: Role;
+  isActive: boolean;
+  createdAt?: string;
+}
+
+export interface LoginResponse {
+  token: string;
+  user: Pick<UserDTO, "id" | "name" | "email" | "role" | "tenantId">;
+}
+
+export interface DeviceDTO {
+  id: string;
+  tenantId: string;
+  userId: string | null;
+  hostname: string | null;
+  platform: string | null;
+  osVersion: string | null;
+  agentVersion: string | null;
+  enrolled: boolean;
+  lastSeenAt: string | null;
+}
+
+/** Device plus the employee it is bound to, as the device list returns it. */
+export interface DeviceWithUserDTO extends DeviceDTO {
+  user: Pick<UserDTO, "id" | "name" | "email"> | null;
+}
+
+export interface ActivityLogDTO {
+  id: string;
+  deviceId: string;
+  userId: string | null;
+  type: ActivityEvent["type"];
+  appName: string | null;
+  windowTitle: string | null;
+  url: string | null;
+  activeSeconds: number;
+  capturedAt: string;
+}
+
+/** One row of the "time spent per application" summary. */
+export interface AppUsageSummary {
+  appName: string;
+  activeSeconds: number;
+}
+
+/** A screenshot or recording with a short-lived playback URL. */
+export interface MediaItemDTO {
+  id: string;
+  kind: MediaKind;
+  capturedAt: string;
+  durationSeconds: number | null;
+  contentType: string;
+  url: string;
+}
+
+/** Standard error envelope returned by the API on 4xx/5xx. */
+export interface ApiError {
+  error: string | Record<string, unknown>;
+}
+
+/** Issued to an admin when they enroll a new device for an employee. */
+export interface DeviceEnrollmentTicket {
+  deviceId: string;
+  enrollmentToken: string;
+}
