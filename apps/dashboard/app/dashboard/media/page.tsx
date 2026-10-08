@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { dayKey, duration, listMedia, MEDIA_PAGE_CAP, MediaItem } from "../reports/_shared/data";
+import { dayKey, duration, listMedia, MediaItem } from "../reports/_shared/data";
 import {
   Button,
   colors,
@@ -45,11 +45,9 @@ export default function MediaPage() {
       setLoading(true);
       setError(null);
       try {
-        // Results are newest-first. /api/media pages by cursor; the legacy
-        // feed pages by moving `to` to just before the oldest item we have.
-        const oldest = append && items.length ? new Date(items[items.length - 1].capturedAt) : null;
+        // Results are newest-first; `nextCursor` continues with older items.
         const page = await listMedia({
-          range: { from: range.from, to: oldest && !nextCursor ? new Date(oldest.getTime() - 1) : range.to },
+          range,
           userId: filters.userId || undefined,
           kind: kind || undefined,
           cursor: append ? nextCursor : null,
@@ -61,14 +59,14 @@ export default function MediaPage() {
           return [...prev, ...page.items.filter((p) => !seen.has(p.id))];
         });
         setNextCursor(page.nextCursor);
-        setHasMore(page.legacy ? page.items.length >= MEDIA_PAGE_CAP : page.nextCursor !== null);
+        setHasMore(page.nextCursor !== null);
       } catch (e) {
         if (id === requestId.current) setError((e as Error).message);
       } finally {
         if (id === requestId.current) setLoading(false);
       }
     },
-    [items, nextCursor, range, filters.userId, kind]
+    [nextCursor, range, filters.userId, kind]
   );
 
   // Presigned URLs are short-lived: if one fails to load, refresh the list

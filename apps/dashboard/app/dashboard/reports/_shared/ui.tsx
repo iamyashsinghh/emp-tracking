@@ -34,6 +34,7 @@ const NAV = [
   { href: "/dashboard", label: "Overview" },
   { href: "/dashboard/media", label: "Media" },
   { href: "/dashboard/reports", label: "Reports" },
+  { href: "/dashboard/settings", label: "Settings" },
 ];
 
 export function Shell({ title, children }: { title: string; children: React.ReactNode }) {

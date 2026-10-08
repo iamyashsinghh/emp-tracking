@@ -45,7 +45,6 @@ export default function ReportsPage() {
   const range = useMemo(() => rangeFor(filters), [filters]);
 
   const [daily, setDaily] = useState<DailyActivity[]>([]);
-  const [partial, setPartial] = useState(false);
   const [apps, setApps] = useState<AppSummary[]>([]);
   const [topAppByUser, setTopAppByUser] = useState<Map<string, string | null>>(new Map());
   const [loading, setLoading] = useState(false);
@@ -62,8 +61,7 @@ export default function ReportsPage() {
     Promise.all([dailyActivity(range, userId), topApps(range, userId)])
       .then(([d, a]) => {
         if (id !== requestId.current) return;
-        setDaily(d.rows);
-        setPartial(d.partial);
+        setDaily(d);
         setApps(a);
       })
       .catch((e) => id === requestId.current && setError((e as Error).message))
@@ -193,11 +191,6 @@ export default function ReportsPage() {
       <FilterBar filters={filters} onChange={setFilters} employees={employees} />
       {employeesError && <Notice tone="error">Could not load employees: {employeesError}</Notice>}
       {error && <Notice tone="error">{error}</Notice>}
-      {partial && (
-        <Notice>
-          Some days had more activity than one page of raw events, so active and idle totals may undercount. Top apps are exact.
-        </Notice>
-      )}
 
       <div
         style={{
