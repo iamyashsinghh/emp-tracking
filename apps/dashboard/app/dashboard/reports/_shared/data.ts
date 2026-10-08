@@ -26,6 +26,14 @@ export interface MediaItem {
   url: string;
   durationSeconds: number | null;
   contentType?: string;
+  // Present on /api/media; absent on the legacy /api/reports/media feed.
+  userId?: string | null;
+  deviceId?: string;
+}
+
+export interface MediaPage {
+  items: MediaItem[];
+  nextCursor: string | null;
 }
 
 export interface AppSummary {
@@ -59,6 +67,8 @@ export interface Range {
 /** Server-side row cap on /api/reports/activity and /api/reports/media. */
 export const ACTIVITY_PAGE_CAP = 500;
 export const MEDIA_PAGE_CAP = 200;
+/** Page size requested from /api/media. */
+export const MEDIA_PAGE_SIZE = 100;
 
 function qs(params: Record<string, string | undefined>) {
   const p = new URLSearchParams();
@@ -71,15 +81,33 @@ export function listEmployees() {
   return api<Employee[]>("/api/users");
 }
 
-export function listMedia(opts: { range: Range; userId?: string; kind?: string }) {
-  return api<MediaItem[]>(
-    `/api/reports/media${qs({
-      from: opts.range.from.toISOString(),
-      to: opts.range.to.toISOString(),
-      userId: opts.userId,
-      kind: opts.kind,
-    })}`
-  );
+/**
+ * One page of media, newest first. Uses the cursor-paginated /api/media and
+ * falls back to the legacy /api/reports/media array (no cursor; callers page
+ * by moving `to` back) until /api/media is deployed.
+ */
+export async function listMedia(opts: {
+  range: Range;
+  userId?: string;
+  kind?: string;
+  cursor?: string | null;
+}): Promise<MediaPage & { legacy: boolean }> {
+  const params = {
+    from: opts.range.from.toISOString(),
+    to: opts.range.to.toISOString(),
+    userId: opts.userId,
+    kind: opts.kind,
+  };
+  try {
+    const page = await api<MediaPage>(
+      `/api/media${qs({ ...params, limit: String(MEDIA_PAGE_SIZE), cursor: opts.cursor ?? undefined })}`
+    );
+    if (page && Array.isArray(page.items)) return { ...page, legacy: false };
+  } catch {
+    // Not deployed yet: use the legacy feed below.
+  }
+  const items = await api<MediaItem[]>(`/api/reports/media${qs(params)}`);
+  return { items, nextCursor: null, legacy: true };
 }
 
 export function topApps(range: Range, userId?: string) {
@@ -172,8 +200,9 @@ export function summarizeWindow(logs: ActivityLog[], window: Range): DailyActivi
 }
 
 /**
- * Active vs idle per day and employee. Prefers an aggregate endpoint
- * (`/api/reports/activity/daily`) and falls back to deriving it from raw
+ * Active vs idle per day and employee. Prefers the aggregate endpoint
+ * (`/api/reports/activity/daily`, which returns only days with activity)
+ * and falls back to deriving it from raw
  * activity one day at a time. `partial` is true when any day hit the raw
  * row cap, so the totals undercount.
  */
@@ -187,6 +216,8 @@ export async function dailyActivity(
         from: range.from.toISOString(),
         to: range.to.toISOString(),
         userId,
+        // Bucket into the viewer's local days (e.g. 330 for IST).
+        tzOffsetMinutes: String(-range.from.getTimezoneOffset()),
       })}`
     );
     if (Array.isArray(rows)) return { rows, partial: false };

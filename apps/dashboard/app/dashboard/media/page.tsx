@@ -31,6 +31,7 @@ export default function MediaPage() {
   const [kind, setKind] = useState<Kind>("");
   const [items, setItems] = useState<MediaItem[]>([]);
   const [hasMore, setHasMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [openIndex, setOpenIndex] = useState<number | null>(null);
@@ -44,29 +45,30 @@ export default function MediaPage() {
       setLoading(true);
       setError(null);
       try {
-        // Results are newest-first; page backwards by moving `to` to just
-        // before the oldest item we already have.
+        // Results are newest-first. /api/media pages by cursor; the legacy
+        // feed pages by moving `to` to just before the oldest item we have.
         const oldest = append && items.length ? new Date(items[items.length - 1].capturedAt) : null;
-        const to = oldest ? new Date(oldest.getTime() - 1) : range.to;
         const page = await listMedia({
-          range: { from: range.from, to },
+          range: { from: range.from, to: oldest && !nextCursor ? new Date(oldest.getTime() - 1) : range.to },
           userId: filters.userId || undefined,
           kind: kind || undefined,
+          cursor: append ? nextCursor : null,
         });
         if (id !== requestId.current) return;
         setItems((prev) => {
-          if (!append) return page;
+          if (!append) return page.items;
           const seen = new Set(prev.map((p) => p.id));
-          return [...prev, ...page.filter((p) => !seen.has(p.id))];
+          return [...prev, ...page.items.filter((p) => !seen.has(p.id))];
         });
-        setHasMore(page.length >= MEDIA_PAGE_CAP);
+        setNextCursor(page.nextCursor);
+        setHasMore(page.legacy ? page.items.length >= MEDIA_PAGE_CAP : page.nextCursor !== null);
       } catch (e) {
         if (id === requestId.current) setError((e as Error).message);
       } finally {
         if (id === requestId.current) setLoading(false);
       }
     },
-    [items, range, filters.userId, kind]
+    [items, nextCursor, range, filters.userId, kind]
   );
 
   // Presigned URLs are short-lived: if one fails to load, refresh the list
@@ -151,7 +153,13 @@ export default function MediaPage() {
               <h3 style={{ fontSize: 13, fontWeight: 600, color: colors.textSecondary, margin: "0 0 10px" }}>{g.label}</h3>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: 12 }}>
                 {g.entries.map(({ item, index }) => (
-                  <Thumb key={item.id} item={item} onOpen={() => setOpenIndex(index)} onError={onMediaError} />
+                  <Thumb
+                    key={item.id}
+                    item={item}
+                    who={!filters.userId && item.userId ? byId.get(item.userId)?.name : undefined}
+                    onOpen={() => setOpenIndex(index)}
+                    onError={onMediaError}
+                  />
                 ))}
               </div>
             </div>
@@ -173,7 +181,7 @@ export default function MediaPage() {
         <Viewer
           items={items}
           index={openIndex}
-          employeeName={employeeName}
+          employeeName={(items[openIndex].userId && byId.get(items[openIndex].userId!)?.name) || employeeName}
           onIndex={setOpenIndex}
           onClose={() => setOpenIndex(null)}
           onError={onMediaError}
@@ -187,8 +195,18 @@ function timeLabel(iso: string) {
   return new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 
-function Thumb({ item, onOpen, onError }: { item: MediaItem; onOpen: () => void; onError: () => void }) {
-  const label = `${item.kind === "SCREENSHOT" ? "Screenshot" : "Recording"} at ${new Date(item.capturedAt).toLocaleString()}`;
+function Thumb({
+  item,
+  who,
+  onOpen,
+  onError,
+}: {
+  item: MediaItem;
+  who?: string;
+  onOpen: () => void;
+  onError: () => void;
+}) {
+  const label = `${item.kind === "SCREENSHOT" ? "Screenshot" : "Recording"}${who ? ` of ${who}` : ""} at ${new Date(item.capturedAt).toLocaleString()}`;
   return (
     <button
       type="button"
@@ -256,7 +274,10 @@ function Thumb({ item, onOpen, onError }: { item: MediaItem; onOpen: () => void;
           background: "linear-gradient(transparent, rgba(0,0,0,.75))",
         }}
       >
-        <span>{timeLabel(item.capturedAt)}</span>
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {timeLabel(item.capturedAt)}
+          {who ? ` · ${who}` : ""}
+        </span>
         {item.kind === "RECORDING" && item.durationSeconds != null && <span>{duration(item.durationSeconds)}</span>}
       </span>
     </button>
