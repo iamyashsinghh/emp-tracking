@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { ActivityLog, Device, fetchActivity, fetchDevices, rangeFor, RangeKey, topApps, topSites } from "../_lib/data";
-import { BarList, ErrorText, muted, RangePicker, Section, Shell, Timeline, useAuthGuard } from "../_components/ui";
+import { ActivityLog, Device, fetchActivity, fetchDevices, rangeFor, RangeKey, topApps } from "../_lib/data";
+import { BarList, ErrorText, muted, RangePicker, Section, Shell, Timeline, useAuthGuard, useTopSites } from "../_components/ui";
 
 const selectStyle: React.CSSProperties = {
   background: "#0b1220",
@@ -47,7 +47,7 @@ export default function ActivityPage() {
     return (id: string) => m.get(id);
   }, [devices]);
   const apps = useMemo(() => topApps(logs), [logs]);
-  const sites = useMemo(() => topSites(logs), [logs]);
+  const sites = useTopSites(!!claims, rangeKey, { userId: userId || undefined, deviceId: deviceId || undefined }, logs, setError);
 
   return (
     <Shell title="Activity" claims={claims}>

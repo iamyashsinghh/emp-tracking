@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { clearToken, getToken } from "../../../lib/api";
 import {
   ActivityLog,
@@ -13,8 +13,12 @@ import {
   duration,
   RANGES,
   RangeKey,
+  fetchSiteSummary,
+  rangeFor,
   relativeTime,
   siteOf,
+  SiteSummary,
+  topSites,
   STATUS_META,
   TokenClaims,
 } from "../_lib/data";
@@ -43,6 +47,32 @@ export function useNow(ms = 30_000) {
     return () => clearInterval(t);
   }, [ms]);
   return now;
+}
+
+// Top websites for a range: exact server totals when the backend supports
+// them, otherwise derived from the already-loaded (capped) timeline.
+export function useTopSites(
+  enabled: boolean,
+  rangeKey: RangeKey,
+  filter: { userId?: string; deviceId?: string },
+  logs: ActivityLog[],
+  onError: (msg: string) => void
+): SiteSummary[] {
+  const [server, setServer] = useState<SiteSummary[] | null>(null);
+  const { userId, deviceId } = filter;
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+    fetchSiteSummary(rangeFor(rangeKey), { userId, deviceId })
+      .then((s) => !cancelled && setServer(s))
+      .catch((e: Error) => !cancelled && onError(e.message));
+    return () => {
+      cancelled = true;
+    };
+    // onError is a state setter; stable across renders.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, rangeKey, userId, deviceId]);
+  return useMemo(() => (server ? server.slice(0, 10) : topSites(logs)), [server, logs]);
 }
 
 const NAV = [

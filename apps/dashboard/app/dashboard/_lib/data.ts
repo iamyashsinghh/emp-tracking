@@ -39,6 +39,7 @@ export interface AppSummary {
 export interface SiteSummary {
   site: string;
   activeSeconds: number;
+  category?: "productive" | "unproductive" | "neutral";
 }
 
 export interface TimeRange {
@@ -80,6 +81,22 @@ export function fetchActivity(range: TimeRange, filter: { userId?: string; devic
   return api<ActivityLog[]>(
     `/api/reports/activity${query({ from: range.from.toISOString(), to: range.to.toISOString(), ...filter })}`
   );
+}
+
+// Exact per-site totals aggregated server-side. Resolves to null when the
+// backend predates this endpoint, so callers can fall back to topSites(logs).
+export async function fetchSiteSummary(
+  range: TimeRange,
+  filter: { userId?: string; deviceId?: string } = {}
+): Promise<SiteSummary[] | null> {
+  try {
+    return await api<SiteSummary[]>(
+      `/api/reports/sites/summary${query({ from: range.from.toISOString(), to: range.to.toISOString(), ...filter })}`
+    );
+  } catch (e) {
+    if (/\b404\b/.test((e as Error).message)) return null;
+    throw e;
+  }
 }
 
 // --- Tenant context ---------------------------------------------------------

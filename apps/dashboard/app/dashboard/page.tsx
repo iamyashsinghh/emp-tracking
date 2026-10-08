@@ -15,7 +15,6 @@ import {
   rangeFor,
   RangeKey,
   STATUS_META,
-  topSites,
 } from "./_lib/data";
 import {
   BarList,
@@ -28,6 +27,7 @@ import {
   StatTile,
   useAuthGuard,
   useNow,
+  useTopSites,
 } from "./_components/ui";
 import Link from "next/link";
 
@@ -98,7 +98,7 @@ export default function Overview() {
     for (const d of devices) c[deviceStatus(d, lastEvents[d.id], now)]++;
     return c;
   }, [devices, lastEvents, now]);
-  const sites = useMemo(() => topSites(logs), [logs]);
+  const sites = useTopSites(!!claims, rangeKey, {}, logs, setError);
 
   return (
     <Shell title="Activity overview" claims={claims}>

@@ -14,7 +14,6 @@ import {
   RangeKey,
   relativeTime,
   topApps,
-  topSites,
 } from "../../_lib/data";
 import {
   BarList,
@@ -28,6 +27,7 @@ import {
   Timeline,
   useAuthGuard,
   useNow,
+  useTopSites,
 } from "../../_components/ui";
 
 export default function DeviceDetail() {
@@ -69,7 +69,7 @@ export default function DeviceDetail() {
   }, [claims, id, rangeKey]);
 
   const apps = useMemo(() => topApps(logs), [logs]);
-  const sites = useMemo(() => topSites(logs), [logs]);
+  const sites = useTopSites(!!claims && !!id, rangeKey, { deviceId: id }, logs, setError);
   const activeSeconds = useMemo(() => logs.reduce((s, l) => s + (l.type === "APP_ACTIVE" ? l.activeSeconds : 0), 0), [logs]);
   const idleCount = useMemo(() => logs.filter((l) => l.type === "IDLE_START").length, [logs]);
   const latest = logs[0];
