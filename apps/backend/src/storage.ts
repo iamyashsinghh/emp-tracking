@@ -25,6 +25,21 @@ export const s3 = new MinioClient({
   region: env.s3.region,
 });
 
+// Presigned URLs embed the host in the signature, so they must be signed for
+// the host the agent / browser actually reaches (S3_PUBLIC_URL), not the
+// internal endpoint (e.g. `minio:9000` inside Docker). Presigning is computed
+// locally — with the region set, this client never makes a network call.
+const publicEp = parseEndpoint(env.s3.publicUrl || env.s3.endpoint);
+
+const s3Public = new MinioClient({
+  endPoint: publicEp.endPoint,
+  port: publicEp.port,
+  useSSL: publicEp.useSSL,
+  accessKey: env.s3.accessKey,
+  secretKey: env.s3.secretKey,
+  region: env.s3.region,
+});
+
 export async function ensureBucket(): Promise<void> {
   const exists = await s3.bucketExists(env.s3.bucket).catch(() => false);
   if (!exists) {
@@ -38,7 +53,7 @@ export async function presignUpload(
   contentType: string,
   expirySeconds = 60 * 10
 ): Promise<{ uploadUrl: string; requiredHeaders: Record<string, string> }> {
-  const uploadUrl = await s3.presignedPutObject(env.s3.bucket, key, expirySeconds);
+  const uploadUrl = await s3Public.presignedPutObject(env.s3.bucket, key, expirySeconds);
   return { uploadUrl, requiredHeaders: { "Content-Type": contentType } };
 }
 
@@ -51,9 +66,9 @@ export async function presignDownload(
   expirySeconds = 60 * 10,
   downloadName?: string
 ): Promise<string> {
-  if (!downloadName) return s3.presignedGetObject(env.s3.bucket, key, expirySeconds);
+  if (!downloadName) return s3Public.presignedGetObject(env.s3.bucket, key, expirySeconds);
   const safe = downloadName.replace(/[^\w.-]/g, "_");
-  return s3.presignedGetObject(env.s3.bucket, key, expirySeconds, {
+  return s3Public.presignedGetObject(env.s3.bucket, key, expirySeconds, {
     "response-content-disposition": `attachment; filename="${safe}"`,
   });
 }
