@@ -1,7 +1,7 @@
 // Data types and helpers for the devices & activity views. The backend scopes
 // every /api/reports call to the tenant in the caller's token, so these views
 // always show the active company's data only.
-import { api, getToken } from "../../../lib/api";
+import { api } from "../../../lib/api";
 
 export interface Device {
   id: string;
@@ -121,7 +121,15 @@ export function activeTenant(): TokenClaims | null {
   } catch {
     // Fall through to the token.
   }
-  const token = getToken();
+  // No session record: fall back to the raw signed-in token. lib/api.ts keeps a
+  // legacy `emptrack_token` copy alongside the session, and a bare token with no
+  // session record can still name its own company.
+  let token: string | null = null;
+  try {
+    token = window.localStorage.getItem("emptrack_token");
+  } catch {
+    return null;
+  }
   if (!token) return null;
   try {
     const payload = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
