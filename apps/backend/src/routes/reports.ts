@@ -660,6 +660,22 @@ reportsRouter.get(
   })
 );
 
+// Per-site time summary, same bare-array shape as `/activity/summary`.
+reportsRouter.get(
+  "/sites/summary",
+  requireUser(...everyone),
+  handle(async (req, res) => {
+    const f = filters(req, res);
+    if (!f) return;
+    const rows = topSites(await loadUsage(f), 50).map(({ domain, activeSeconds, category }) => ({
+      site: domain,
+      activeSeconds,
+      category,
+    }));
+    send(res, f, "sites_summary", rows, () => rows);
+  })
+);
+
 // Raw activity timeline for one user/device.
 reportsRouter.get(
   "/activity",
