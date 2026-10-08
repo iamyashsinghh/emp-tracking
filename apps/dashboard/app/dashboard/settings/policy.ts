@@ -17,32 +17,40 @@ export interface Policy {
   screenRecordingEnabled: boolean;
   recordingChunkSeconds: number;
   recordingFps: number;
+  recordingBitrateKbps: number;
+  excludedApps: string[];
+  activeWindowOnly: boolean;
+  screenshotDailyCap: number;
+  recordingDailyCapMinutes: number;
   showTrayIcon: boolean;
   notifyEmployeeOnStart: boolean;
   workingHoursStart: string | null;
   workingHoursEnd: string | null;
-
-  // Not in the shared schema yet. The page only enables these controls
-  // once the backend starts returning the key, so nothing is silently
-  // dropped by the server.
-  activeWindowOnly?: boolean;
-  dailyCapMinutes?: number;
-  excludedApps?: string[];
 }
 
 export type PolicyKey = keyof Policy;
 
-/** Fields that need a shared-schema + Prisma change before they persist. */
-export const PENDING_KEYS = ["activeWindowOnly", "dailyCapMinutes", "excludedApps"] as const;
-
-export const LIMITS = {
+// The daily caps have no upper bound in the shared schema.
+export const LIMITS: Record<
+  | "activitySampleSeconds"
+  | "idleThresholdSeconds"
+  | "screenshotIntervalSeconds"
+  | "recordingChunkSeconds"
+  | "recordingFps"
+  | "recordingBitrateKbps"
+  | "screenshotDailyCap"
+  | "recordingDailyCapMinutes",
+  { min: number; max?: number }
+> = {
   activitySampleSeconds: { min: 5, max: 3600 },
   idleThresholdSeconds: { min: 30, max: 7200 },
   screenshotIntervalSeconds: { min: 5, max: 3600 },
   recordingChunkSeconds: { min: 30, max: 3600 },
   recordingFps: { min: 1, max: 30 },
-  dailyCapMinutes: { min: 0, max: 1440 },
-} as const;
+  recordingBitrateKbps: { min: 100, max: 50000 },
+  screenshotDailyCap: { min: 0 },
+  recordingDailyCapMinutes: { min: 0 },
+};
 
 export type LimitedKey = keyof typeof LIMITS;
 
@@ -76,10 +84,10 @@ export function validate(p: Policy): Partial<Record<PolicyKey, string>> {
   const errors: Partial<Record<PolicyKey, string>> = {};
   for (const key of Object.keys(LIMITS) as LimitedKey[]) {
     const value = p[key];
-    if (value === undefined) continue;
     const { min, max } = LIMITS[key];
-    if (!Number.isInteger(value) || value < min || value > max) {
-      errors[key] = `Enter a whole number between ${min} and ${max}.`;
+    if (!Number.isInteger(value) || value < min || (max !== undefined && value > max)) {
+      errors[key] =
+        max === undefined ? `Enter a whole number of ${min} or more.` : `Enter a whole number between ${min} and ${max}.`;
     }
   }
   const start = p.workingHoursStart ?? "";
@@ -92,20 +100,35 @@ export function validate(p: Policy): Partial<Record<PolicyKey, string>> {
   return errors;
 }
 
-/**
- * Builds the PUT body: only fields that changed, and only fields the
- * backend accepts. Empty working hours are left out because the schema
- * accepts a time string or nothing, not null.
- */
-export function diff(saved: Policy, draft: Policy, supported: Set<string>): Partial<Policy> {
+/** Every field the PUT accepts; the GET also returns id, tenantId and updatedAt. */
+const POLICY_KEYS: PolicyKey[] = [
+  "monitoringEnabled",
+  "activityTrackingEnabled",
+  "activitySampleSeconds",
+  "idleThresholdSeconds",
+  "screenshotsEnabled",
+  "screenshotIntervalSeconds",
+  "screenshotBlur",
+  "screenRecordingEnabled",
+  "recordingChunkSeconds",
+  "recordingFps",
+  "recordingBitrateKbps",
+  "excludedApps",
+  "activeWindowOnly",
+  "screenshotDailyCap",
+  "recordingDailyCapMinutes",
+  "showTrayIcon",
+  "notifyEmployeeOnStart",
+  "workingHoursStart",
+  "workingHoursEnd",
+];
+
+/** Builds the PUT body from only the fields that changed. Cleared working hours go as null. */
+export function diff(saved: Policy, draft: Policy): Partial<Policy> {
   const patch: Record<string, unknown> = {};
-  for (const key of Object.keys(draft) as PolicyKey[]) {
-    if (!supported.has(key)) continue;
-    const a = saved[key];
-    const b = draft[key];
-    if (JSON.stringify(a) === JSON.stringify(b)) continue;
-    if ((key === "workingHoursStart" || key === "workingHoursEnd") && !b) continue;
-    patch[key] = b;
+  for (const key of POLICY_KEYS) {
+    if (JSON.stringify(saved[key] ?? null) === JSON.stringify(draft[key] ?? null)) continue;
+    patch[key] = draft[key] ?? null;
   }
   return patch as Partial<Policy>;
 }

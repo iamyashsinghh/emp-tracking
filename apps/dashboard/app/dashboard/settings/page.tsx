@@ -20,7 +20,6 @@ import {
 } from "./controls";
 import {
   LIMITS,
-  PENDING_KEYS,
   POLICY_EDITOR_ROLES,
   Policy,
   PolicyKey,
@@ -73,13 +72,8 @@ export default function PolicySettingsPage() {
     })();
   }, [router]);
 
-  // A field is editable only if the server already returns it; anything
-  // else would be stripped by the backend's schema on save.
-  const supported = useMemo(() => new Set(saved ? Object.keys(saved) : []), [saved]);
-  const isPending = (key: PolicyKey) => !supported.has(key);
-
   const errors = useMemo(() => (draft ? validate(draft) : {}), [draft]);
-  const patch = useMemo(() => (saved && draft ? diff(saved, draft, supported) : {}), [saved, draft, supported]);
+  const patch = useMemo(() => (saved && draft ? diff(saved, draft) : {}), [saved, draft]);
   const dirty = Object.keys(patch).length > 0;
   const hasErrors = Object.keys(errors).length > 0;
 
@@ -182,6 +176,23 @@ export default function PolicySettingsPage() {
             disabled={!draft.screenshotsEnabled}
           />
         </Row>
+        <Row>
+          <Label title="Daily screenshot limit" hint="Most screenshots per device per day. 0 means no limit." />
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
+            <NumberInput
+              label="Daily screenshot limit"
+              value={draft.screenshotDailyCap}
+              onChange={(v) => set("screenshotDailyCap", v)}
+              {...LIMITS.screenshotDailyCap}
+              unit="screenshots / day"
+              disabled={!draft.screenshotsEnabled}
+            />
+            <span style={{ color: colors.muted, fontSize: 13, minWidth: 70 }}>
+              {draft.screenshotDailyCap === 0 ? "= no limit" : ""}
+            </span>
+          </span>
+          <FieldError message={errors.screenshotDailyCap} />
+        </Row>
       </Card>
 
       <Card title="Screen recording" description="Continuous video of the screen, uploaded in chunks." dimmed={!master}>
@@ -220,6 +231,35 @@ export default function PolicySettingsPage() {
           />
           <FieldError message={errors.recordingFps} />
         </Row>
+        <Row>
+          <Label title="Video quality" hint="Target bitrate. 1500 kbps is a good default; higher means sharper video and bigger files." />
+          <NumberInput
+            label="Recording bitrate in kbps"
+            value={draft.recordingBitrateKbps}
+            onChange={(v) => set("recordingBitrateKbps", v)}
+            {...LIMITS.recordingBitrateKbps}
+            unit="kbps"
+            disabled={!draft.screenRecordingEnabled}
+          />
+          <FieldError message={errors.recordingBitrateKbps} />
+        </Row>
+        <Row>
+          <Label title="Daily recording limit" hint="Most minutes of video per device per day. 0 means no limit." />
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
+            <NumberInput
+              label="Daily recording limit in minutes"
+              value={draft.recordingDailyCapMinutes}
+              onChange={(v) => set("recordingDailyCapMinutes", v)}
+              {...LIMITS.recordingDailyCapMinutes}
+              unit="minutes / day"
+              disabled={!draft.screenRecordingEnabled}
+            />
+            <span style={{ color: colors.muted, fontSize: 13, minWidth: 70 }}>
+              = {draft.recordingDailyCapMinutes ? humanSeconds(draft.recordingDailyCapMinutes * 60) : "no limit"}
+            </span>
+          </span>
+          <FieldError message={errors.recordingDailyCapMinutes} />
+        </Row>
       </Card>
 
       <Card title="App & window activity" description="Which app and window is in use, and when the employee is idle." dimmed={!master}>
@@ -254,55 +294,34 @@ export default function PolicySettingsPage() {
           />
           <FieldError message={errors.idleThresholdSeconds} />
         </Row>
+      </Card>
+
+      <Card title="What gets captured" description="Applies to screenshots and screen recording." dimmed={!master}>
         <Row>
           <Label
             title="Active window only"
-            hint="Capture only the focused window instead of the whole desktop."
-            pending={isPending("activeWindowOnly")}
+            hint={
+              draft.activeWindowOnly
+                ? "ON: only the window the employee is working in is captured."
+                : "OFF: the whole screen is captured."
+            }
           />
-          <Toggle
-            label="Active window only"
-            checked={draft.activeWindowOnly ?? false}
-            onChange={(v) => set("activeWindowOnly", v)}
-            disabled={isPending("activeWindowOnly")}
-          />
+          <Toggle label="Active window only" checked={draft.activeWindowOnly} onChange={(v) => set("activeWindowOnly", v)} />
         </Row>
-      </Card>
-
-      <Card title="Excluded apps" description="Never screenshot, record or log these apps (for example banking or personal chat)." dimmed={!master}>
-        <Row>
-          <Label title="Apps to skip" pending={isPending("excludedApps")} />
-          <TagList
-            values={draft.excludedApps ?? []}
-            onChange={(v) => set("excludedApps", v)}
-            placeholder="e.g. WhatsApp, KeePass"
-            disabled={isPending("excludedApps")}
-          />
-        </Row>
-      </Card>
-
-      <Card title="Limits & schedule" dimmed={!master}>
         <Row>
           <Label
-            title="Daily cap"
-            hint="Stop collecting after this many minutes of tracked time per day. 0 means no cap."
-            pending={isPending("dailyCapMinutes")}
+            title="Excluded apps"
+            hint="Nothing is captured while one of these apps is in front (for example banking or personal chat)."
           />
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
-            <NumberInput
-              label="Daily cap in minutes"
-              value={draft.dailyCapMinutes ?? 0}
-              onChange={(v) => set("dailyCapMinutes", v)}
-              {...LIMITS.dailyCapMinutes}
-              unit="minutes"
-              disabled={isPending("dailyCapMinutes")}
-            />
-            <span style={{ color: colors.muted, fontSize: 13, minWidth: 90 }}>
-              = {draft.dailyCapMinutes ? humanSeconds(draft.dailyCapMinutes * 60) : "no cap"}
-            </span>
-          </span>
-          <FieldError message={errors.dailyCapMinutes} />
+          <TagList
+            values={draft.excludedApps}
+            onChange={(v) => set("excludedApps", v)}
+            placeholder="e.g. WhatsApp, KeePass"
+          />
         </Row>
+      </Card>
+
+      <Card title="Schedule" dimmed={!master}>
         <Row>
           <Label
             title="Working hours"
@@ -314,9 +333,6 @@ export default function PolicySettingsPage() {
             <TimeInput label="Working hours end" value={draft.workingHoursEnd ?? ""} onChange={(v) => set("workingHoursEnd", v || null)} />
           </span>
           <FieldError message={errors.workingHoursStart ?? errors.workingHoursEnd} />
-          {saved && (saved.workingHoursStart || saved.workingHoursEnd) && !draft.workingHoursStart && !draft.workingHoursEnd && (
-            <FieldError message="Clearing saved working hours is not supported by the server yet; they will stay as they are." />
-          )}
         </Row>
       </Card>
 
@@ -335,11 +351,6 @@ export default function PolicySettingsPage() {
         </Row>
       </Card>
 
-      {PENDING_KEYS.some(isPending) && (
-        <p style={{ color: colors.muted, fontSize: 12, marginTop: 16 }}>
-          Settings marked “Coming soon” are shown for preview and will become editable once the server supports them.
-        </p>
-      )}
 
       <div
         style={{

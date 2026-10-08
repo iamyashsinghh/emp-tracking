@@ -11,7 +11,6 @@ export const colors = {
   off: "#475569",
   accent: "#3b82f6",
   error: "#f87171",
-  warn: "#fbbf24",
 };
 
 export function Card({
@@ -61,34 +60,12 @@ export function Row({ children }: { children: React.ReactNode }) {
   );
 }
 
-export function Label({ title, hint, pending }: { title: string; hint?: string; pending?: boolean }) {
+export function Label({ title, hint }: { title: string; hint?: string }) {
   return (
     <div style={{ flex: "1 1 260px", minWidth: 0 }}>
-      <div style={{ fontSize: 14, fontWeight: 600 }}>
-        {title}
-        {pending && <PendingBadge />}
-      </div>
+      <div style={{ fontSize: 14, fontWeight: 600 }}>{title}</div>
       {hint && <div style={{ color: colors.muted, fontSize: 12, marginTop: 2 }}>{hint}</div>}
     </div>
-  );
-}
-
-function PendingBadge() {
-  return (
-    <span
-      title="The server does not store this setting yet."
-      style={{
-        marginLeft: 8,
-        fontSize: 11,
-        fontWeight: 500,
-        color: colors.warn,
-        border: `1px solid ${colors.warn}`,
-        borderRadius: 999,
-        padding: "1px 8px",
-      }}
-    >
-      Coming soon
-    </span>
   );
 }
 
@@ -180,7 +157,7 @@ export function NumberInput({
   value: number;
   onChange: (v: number) => void;
   min: number;
-  max: number;
+  max?: number;
   unit: string;
   disabled?: boolean;
   label: string;
@@ -217,7 +194,7 @@ export function SecondsField({
   value: number;
   onChange: (v: number) => void;
   min: number;
-  max: number;
+  max?: number;
   presets: number[];
   disabled?: boolean;
   label: string;
