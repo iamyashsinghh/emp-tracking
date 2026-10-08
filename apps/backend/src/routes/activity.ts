@@ -164,7 +164,7 @@ activityRouter.post("/", requireDevice, async (req, res) => {
     }
 
     // One round trip for the whole batch; skipDuplicates keeps the ingest
-    // idempotent across network retries (unique clientEventId).
+    // idempotent across network retries (unique per deviceId + clientEventId).
     const result = rows.length
       ? await prisma.activityLog.createMany({ data: rows, skipDuplicates: true })
       : { count: 0 };
