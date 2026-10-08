@@ -13,13 +13,6 @@ const slugSchema = z
   .max(48)
   .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "Use lowercase letters, digits and single hyphens");
 
-const createTenantSchema = z.object({
-  name: z.string().trim().min(1).max(120),
-  slug: slugSchema,
-  // Optional starting policy; anything omitted falls back to schema defaults.
-  policy: devicePolicySchema.partial().optional(),
-});
-
 const updateTenantSchema = z
   .object({
     name: z.string().trim().min(1).max(120).optional(),
@@ -36,8 +29,25 @@ const policyUpdateSchema = devicePolicySchema
   .extend({
     workingHoursStart: hhmm.nullable().optional(),
     workingHoursEnd: hhmm.nullable().optional(),
+    // Trim, drop blanks and de-duplicate so the agent gets a clean match list.
+    excludedApps: z
+      .array(z.string().trim().max(255))
+      .max(500)
+      .transform((apps) => [...new Set(apps.filter(Boolean))])
+      .optional(),
   })
   .strict();
+
+const createTenantSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  slug: slugSchema,
+  // Optional starting policy; anything omitted falls back to schema defaults.
+  policy: policyUpdateSchema
+    .refine((p) => !p.workingHoursStart === !p.workingHoursEnd, {
+      message: "workingHoursStart and workingHoursEnd must be set together",
+    })
+    .optional(),
+});
 
 type Handler = (req: Request, res: Response) => Promise<unknown>;
 
