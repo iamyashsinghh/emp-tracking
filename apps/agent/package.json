@@ -8,7 +8,9 @@
     "build": "tsc -p tsconfig.json && node scripts/copy-assets.js",
     "dev": "npm run build && electron .",
     "start": "electron .",
-    "dist": "npm run build && electron-builder"
+    "dist": "npm run build && electron-builder",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@emptrack/shared": "*",
@@ -21,14 +23,27 @@
     "@types/uuid": "^9.0.8",
     "electron": "^31.3.0",
     "electron-builder": "^24.13.3",
-    "typescript": "^5.5.4"
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.9",
+    "@emptrack/test-utils": "*"
   },
   "build": {
     "appId": "com.emptrack.agent",
     "productName": "EmpTrack Agent",
-    "files": ["dist/**/*", "package.json"],
-    "mac": { "target": "dmg", "category": "public.app-category.business" },
-    "win": { "target": "nsis" },
-    "linux": { "target": "AppImage", "category": "Utility" }
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.business"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "linux": {
+      "target": "AppImage",
+      "category": "Utility"
+    }
   }
 }
