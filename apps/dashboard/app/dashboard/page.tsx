@@ -1,20 +1,36 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
-import { api, clearToken, getToken } from "../../lib/api";
+import { useEffect, useMemo, useState } from "react";
+import { api } from "../../lib/api";
+import {
+  ActivityLog,
+  AppSummary,
+  Device,
+  deviceStatus,
+  DeviceStatus,
+  fetchActivity,
+  fetchAppSummary,
+  fetchDevices,
+  latestByDevice,
+  rangeFor,
+  RangeKey,
+  STATUS_META,
+} from "./_lib/data";
+import {
+  BarList,
+  DevicesTable,
+  Empty,
+  ErrorText,
+  RangePicker,
+  Section,
+  Shell,
+  StatTile,
+  useAuthGuard,
+  useNow,
+  useTopSites,
+} from "./_components/ui";
+import Link from "next/link";
 
-interface Device {
-  id: string;
-  hostname: string | null;
-  platform: string | null;
-  lastSeenAt: string | null;
-  user: { name: string; email: string } | null;
-}
-interface AppSummary {
-  appName: string;
-  activeSeconds: number;
-}
 interface MediaItem {
   id: string;
   kind: "SCREENSHOT" | "RECORDING";
@@ -23,87 +39,97 @@ interface MediaItem {
   durationSeconds: number | null;
 }
 
-function hours(seconds: number) {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  return h > 0 ? `${h}h ${m}m` : `${m}m`;
-}
-
-export default function Dashboard() {
-  const router = useRouter();
+export default function Overview() {
+  const claims = useAuthGuard();
+  const now = useNow();
+  const [rangeKey, setRangeKey] = useState<RangeKey>("24h");
   const [devices, setDevices] = useState<Device[]>([]);
-  const [summary, setSummary] = useState<AppSummary[]>([]);
+  const [recent, setRecent] = useState<ActivityLog[]>([]);
+  const [apps, setApps] = useState<AppSummary[]>([]);
   const [media, setMedia] = useState<MediaItem[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  // Device list + live status, refreshed every 30s.
   useEffect(() => {
-    if (!getToken()) {
-      router.replace("/login");
-      return;
-    }
+    if (!claims) return;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const [d, r] = await Promise.all([fetchDevices(), fetchActivity(rangeFor("1h"))]);
+        if (cancelled) return;
+        setDevices(d);
+        setRecent(r);
+      } catch (e) {
+        if (!cancelled) setError((e as Error).message);
+      }
+    };
+    void load();
+    const t = setInterval(load, 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [claims]);
+
+  // Top apps / media for the selected range.
+  useEffect(() => {
+    if (!claims) return;
+    const range = rangeFor(rangeKey);
     (async () => {
       try {
-        setDevices(await api<Device[]>("/api/reports/devices"));
-        setSummary(await api<AppSummary[]>("/api/reports/activity/summary"));
-        setMedia(await api<MediaItem[]>("/api/reports/media"));
+        const [a, m] = await Promise.all([
+          fetchAppSummary(range),
+          api<MediaItem[]>(`/api/reports/media?from=${range.from.toISOString()}&to=${range.to.toISOString()}`),
+        ]);
+        setApps(a);
+        setMedia(m);
       } catch (e) {
         setError((e as Error).message);
       }
     })();
-  }, [router]);
+  }, [claims, rangeKey]);
 
-  function logout() {
-    clearToken();
-    router.replace("/login");
-  }
+  const lastEvents = useMemo(() => latestByDevice(recent), [recent]);
+  const counts = useMemo(() => {
+    const c: Record<DeviceStatus, number> = { online: 0, idle: 0, away: 0, offline: 0, pending: 0 };
+    for (const d of devices) c[deviceStatus(d, lastEvents[d.id], now)]++;
+    return c;
+  }, [devices, lastEvents, now]);
+  const sites = useTopSites(claims, rangeKey, {}, setError);
 
   return (
-    <main style={{ maxWidth: 1100, margin: "0 auto", padding: 28 }}>
-      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <h1 style={{ fontSize: 24 }}>Activity overview</h1>
-        <button onClick={logout} style={{ background: "transparent", color: "#9ab", border: "1px solid #334", padding: "8px 14px", borderRadius: 8, cursor: "pointer" }}>
-          Sign out
-        </button>
-      </header>
-      {error && <p style={{ color: "#f87171" }}>{error}</p>}
+    <Shell title="Activity overview" claims={claims}>
+      <ErrorText error={error} />
 
-      <Section title={`Devices (${devices.length})`}>
-        <table style={tableStyle}>
-          <thead>
-            <tr>
-              <Th>Employee</Th>
-              <Th>Host</Th>
-              <Th>Platform</Th>
-              <Th>Last seen</Th>
-            </tr>
-          </thead>
-          <tbody>
-            {devices.map((d) => (
-              <tr key={d.id}>
-                <Td>{d.user?.name ?? "—"}</Td>
-                <Td>{d.hostname ?? "—"}</Td>
-                <Td>{d.platform ?? "—"}</Td>
-                <Td>{d.lastSeenAt ? new Date(d.lastSeenAt).toLocaleString() : "never"}</Td>
-              </tr>
-            ))}
-            {devices.length === 0 && (
-              <tr>
-                <Td colSpan={4}>No devices enrolled yet.</Td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </Section>
-
-      <Section title="Top applications (last 24h)">
-        {summary.map((s) => (
-          <div key={s.appName} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: "1px solid #1b2538" }}>
-            <span>{s.appName}</span>
-            <span style={{ color: "#9ab" }}>{hours(s.activeSeconds)}</span>
-          </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginTop: 24 }}>
+        <StatTile label="Devices" value={devices.length} />
+        {(["online", "idle", "away", "offline"] as const).map((s) => (
+          <StatTile key={s} label={STATUS_META[s].label} value={counts[s]} color={STATUS_META[s].color} />
         ))}
-        {summary.length === 0 && <p style={{ color: "#9ab" }}>No activity recorded yet.</p>}
+      </div>
+
+      <Section
+        title={`Devices (${devices.length})`}
+        action={
+          <Link href="/dashboard/devices" style={{ color: "#93c5fd", fontSize: 14, textDecoration: "none" }}>
+            View all
+          </Link>
+        }
+      >
+        <DevicesTable devices={devices.slice(0, 10)} lastEvents={lastEvents} now={now} />
       </Section>
+
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 28 }}>
+        <RangePicker value={rangeKey} onChange={setRangeKey} />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16 }}>
+        <Section title="Top applications">
+          <BarList items={apps.slice(0, 10).map((a) => ({ label: a.appName, seconds: a.activeSeconds }))} empty="No activity recorded yet." />
+        </Section>
+        <Section title="Top websites">
+          <BarList items={sites.map((s) => ({ label: s.site, seconds: s.activeSeconds }))} empty="No website visits recorded yet." />
+        </Section>
+      </div>
 
       <Section title="Recent screenshots & recordings">
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12 }}>
@@ -115,25 +141,9 @@ export default function Dashboard() {
               <video key={m.id} src={m.url} controls style={{ width: "100%", borderRadius: 8, border: "1px solid #223" }} />
             )
           )}
-          {media.length === 0 && <p style={{ color: "#9ab" }}>No media captured yet.</p>}
         </div>
+        {media.length === 0 && <Empty>No media captured yet.</Empty>}
       </Section>
-    </main>
+    </Shell>
   );
-}
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section style={{ marginTop: 28, background: "#131c2e", border: "1px solid #223", borderRadius: 12, padding: 20 }}>
-      <h2 style={{ fontSize: 16, marginTop: 0 }}>{title}</h2>
-      {children}
-    </section>
-  );
-}
-const tableStyle: React.CSSProperties = { width: "100%", borderCollapse: "collapse", fontSize: 14 };
-function Th({ children }: { children: React.ReactNode }) {
-  return <th style={{ textAlign: "left", padding: "8px 6px", color: "#9ab", borderBottom: "1px solid #223", fontWeight: 600 }}>{children}</th>;
-}
-function Td({ children, colSpan }: { children: React.ReactNode; colSpan?: number }) {
-  return <td colSpan={colSpan} style={{ padding: "8px 6px", borderBottom: "1px solid #1b2538" }}>{children}</td>;
 }
