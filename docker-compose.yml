@@ -1,3 +1,26 @@
+# Local / single-host stack: Postgres + MinIO + backend API + dashboard.
+#
+#   cp .env.example .env
+#   docker compose up -d --build          # schema is applied automatically
+#   SEED=true docker compose up migrate   # optional: seed a demo company
+#
+# Production deploys layer docker-compose.prod.yml on top (prebuilt images,
+# no published DB/MinIO ports). See README / PR notes.
+
+x-backend-env: &backend-env
+  NODE_ENV: production
+  BACKEND_PORT: 4000
+  DATABASE_URL: postgresql://${POSTGRES_USER:-emptrack}:${POSTGRES_PASSWORD:-emptrack}@postgres:5432/${POSTGRES_DB:-emptrack}?schema=public
+  JWT_SECRET: ${JWT_SECRET:-change-me-in-production-please}
+  JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+  CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+  S3_ENDPOINT: ${S3_INTERNAL_ENDPOINT:-http://minio:9000}
+  S3_REGION: ${S3_REGION:-us-east-1}
+  S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
+  S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
+  S3_BUCKET: ${S3_BUCKET:-emptrack-media}
+  S3_PUBLIC_URL: ${S3_PUBLIC_URL:-http://localhost:9000}
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -7,63 +30,96 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-emptrack}
       POSTGRES_DB: ${POSTGRES_DB:-emptrack}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-emptrack}"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 10s
 
   minio:
-    image: minio/minio:latest
+    # Upstream stopped publishing minio/minio images; pgsty/minio is a drop-in
+    # community build of the same server. Override with MINIO_IMAGE if needed.
+    image: ${MINIO_IMAGE:-pgsty/minio:RELEASE.2026-08-04T00-00-00Z}
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${S3_ACCESS_KEY:-minioadmin}
       MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-minioadmin}
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  # One-shot: applies migrations (or `prisma db push` while the repo has no
+  # migrations yet). Set SEED=true to also run the demo seed.
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+      target: build
+    image: ${BACKEND_MIGRATE_IMAGE:-emptrack-backend-migrate:local}
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *backend-env
+      SEED: ${SEED:-false}
 
   backend:
     build:
       context: .
       dockerfile: apps/backend/Dockerfile
+      target: runtime
+    image: ${BACKEND_IMAGE:-emptrack-backend:local}
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
       minio:
-        condition: service_started
-    environment:
-      NODE_ENV: production
-      BACKEND_PORT: 4000
-      DATABASE_URL: postgresql://${POSTGRES_USER:-emptrack}:${POSTGRES_PASSWORD:-emptrack}@postgres:5432/${POSTGRES_DB:-emptrack}?schema=public
-      JWT_SECRET: ${JWT_SECRET:-change-me-in-production-please}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
-      S3_ENDPOINT: http://minio:9000
-      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
-      S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
-      S3_BUCKET: ${S3_BUCKET:-emptrack-media}
-      S3_PUBLIC_URL: http://localhost:9000
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment: *backend-env
     ports:
-      - "4000:4000"
+      - "${BACKEND_PORT:-4000}:4000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
 
   dashboard:
     build:
       context: .
       dockerfile: apps/dashboard/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000}
+    image: ${DASHBOARD_IMAGE:-emptrack-dashboard:local}
     restart: unless-stopped
     depends_on:
-      - backend
-    environment:
-      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000}
+      backend:
+        condition: service_healthy
     ports:
-      - "3000:3000"
+      - "${DASHBOARD_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/login').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
 
 volumes:
   pgdata:

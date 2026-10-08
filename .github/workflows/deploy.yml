@@ -1,0 +1,158 @@
+name: Deploy
+
+# Builds production images, pushes them to GHCR, then (if the target
+# environment has SSH secrets configured) rolls them out on a Docker host.
+#
+#   push to staging -> environment "staging"
+#   push to main    -> environment "production"
+#   manual run      -> pick the environment
+#
+# Environment secrets:   DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY,
+#                        DEPLOY_PATH (optional, default ~/emp-tracking)
+# Environment variables: NEXT_PUBLIC_API_URL (public API URL baked into the
+#                        dashboard bundle)
+# The host keeps its own .env (secrets, DB password, S3 keys) next to the
+# compose files; this workflow only updates the image tags in it.
+
+on:
+  push:
+    branches: [staging, main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        type: choice
+        options: [staging, production]
+        default: staging
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  images:
+    name: Build & push images
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment || (github.ref_name == 'main' && 'production') || 'staging' }}
+    outputs:
+      backend: ${{ steps.names.outputs.backend }}
+      migrate: ${{ steps.names.outputs.migrate }}
+      dashboard: ${{ steps.names.outputs.dashboard }}
+      tag: ${{ steps.names.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: names
+        run: |
+          repo="ghcr.io/${GITHUB_REPOSITORY,,}"
+          tag="sha-${GITHUB_SHA::12}"
+          echo "backend=${repo}-backend" >> "$GITHUB_OUTPUT"
+          echo "migrate=${repo}-backend-migrate" >> "$GITHUB_OUTPUT"
+          echo "dashboard=${repo}-dashboard" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+      - name: Backend (runtime)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/backend/Dockerfile
+          target: runtime
+          push: true
+          tags: |
+            ${{ steps.names.outputs.backend }}:${{ steps.names.outputs.tag }}
+            ${{ steps.names.outputs.backend }}:${{ github.ref_name }}
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,scope=backend,mode=max
+      - name: Backend (migrate)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/backend/Dockerfile
+          target: build
+          push: true
+          tags: |
+            ${{ steps.names.outputs.migrate }}:${{ steps.names.outputs.tag }}
+            ${{ steps.names.outputs.migrate }}:${{ github.ref_name }}
+          cache-from: type=gha,scope=backend
+      - name: Dashboard
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/dashboard/Dockerfile
+          push: true
+          build-args: |
+            NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL || 'http://localhost:4000' }}
+          tags: |
+            ${{ steps.names.outputs.dashboard }}:${{ steps.names.outputs.tag }}
+            ${{ steps.names.outputs.dashboard }}:${{ github.ref_name }}
+          cache-from: type=gha,scope=dashboard
+          cache-to: type=gha,scope=dashboard,mode=max
+
+  rollout:
+    name: Roll out to host
+    needs: images
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment || (github.ref_name == 'main' && 'production') || 'staging' }}
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || '~/emp-tracking' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check deploy target
+        id: target
+        run: |
+          if [ -z "$DEPLOY_HOST" ]; then
+            echo "::notice::DEPLOY_HOST not set for this environment; images pushed, skipping rollout."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Configure SSH
+        if: steps.target.outputs.skip != 'true'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - name: Copy compose files
+        if: steps.target.outputs.skip != 'true'
+        run: |
+          ssh -i ~/.ssh/id_deploy "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p $DEPLOY_PATH"
+          scp -i ~/.ssh/id_deploy docker-compose.yml docker-compose.prod.yml "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/"
+      - name: Pull & restart
+        if: steps.target.outputs.skip != 'true'
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BACKEND_IMAGE: ${{ needs.images.outputs.backend }}:${{ needs.images.outputs.tag }}
+          BACKEND_MIGRATE_IMAGE: ${{ needs.images.outputs.migrate }}:${{ needs.images.outputs.tag }}
+          DASHBOARD_IMAGE: ${{ needs.images.outputs.dashboard }}:${{ needs.images.outputs.tag }}
+        run: |
+          ssh -i ~/.ssh/id_deploy "$DEPLOY_USER@$DEPLOY_HOST" \
+            "DEPLOY_PATH=$DEPLOY_PATH GHCR_USER=$GHCR_USER GHCR_TOKEN=$GHCR_TOKEN \
+             BACKEND_IMAGE=$BACKEND_IMAGE BACKEND_MIGRATE_IMAGE=$BACKEND_MIGRATE_IMAGE DASHBOARD_IMAGE=$DASHBOARD_IMAGE \
+             bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd "$DEPLOY_PATH"
+          touch .env
+          for k in BACKEND_IMAGE BACKEND_MIGRATE_IMAGE DASHBOARD_IMAGE; do
+            sed -i "/^$k=/d" .env
+            echo "$k=${!k}" >> .env
+          done
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+          compose="docker compose -f docker-compose.yml -f docker-compose.prod.yml"
+          $compose pull
+          $compose up -d --remove-orphans --wait --wait-timeout 300
+          docker logout ghcr.io
+          docker image prune -f
+          $compose ps
+          REMOTE
