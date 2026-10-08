@@ -1,0 +1,164 @@
+// Multi-tenant employee monitoring data model.
+// Every tenant-scoped row carries tenantId so one database cleanly serves
+// all of the owner's companies with hard isolation at the query layer.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  SUPER_ADMIN
+  ADMIN
+  MANAGER
+  EMPLOYEE
+}
+
+enum MediaKind {
+  SCREENSHOT
+  RECORDING
+}
+
+enum ActivityType {
+  APP_ACTIVE
+  IDLE_START
+  IDLE_END
+  SESSION_START
+  SESSION_END
+}
+
+// A tenant is one company. The owner can create as many as they need.
+model Tenant {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users    User[]
+  devices  Device[]
+  policy   TenantPolicy?
+  activity ActivityLog[]
+  media    MediaAsset[]
+}
+
+// Default monitoring policy for a company. Devices inherit this; a device
+// can later be given an override (kept simple here with one policy per tenant).
+model TenantPolicy {
+  id       String @id @default(cuid())
+  tenantId String @unique
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  monitoringEnabled        Boolean @default(true)
+  activityTrackingEnabled  Boolean @default(true)
+  activitySampleSeconds    Int     @default(30)
+  idleThresholdSeconds     Int     @default(300)
+  screenshotsEnabled       Boolean @default(true)
+  screenshotIntervalSeconds Int    @default(300)
+  screenshotBlur           Boolean @default(false)
+  screenRecordingEnabled   Boolean @default(false)
+  recordingChunkSeconds    Int     @default(300)
+  recordingFps             Int     @default(5)
+  showTrayIcon             Boolean @default(true)
+  notifyEmployeeOnStart    Boolean @default(true)
+  workingHoursStart        String?
+  workingHoursEnd          String?
+
+  updatedAt DateTime @updatedAt
+}
+
+model User {
+  id           String   @id @default(cuid())
+  tenantId     String
+  tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  email        String
+  name         String
+  passwordHash String
+  role         Role     @default(EMPLOYEE)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  devices  Device[]
+  activity ActivityLog[]
+  media    MediaAsset[]
+
+  // Email is unique within a tenant, not globally.
+  @@unique([tenantId, email])
+  @@index([tenantId])
+}
+
+// A monitored machine, bound to one employee after enrollment.
+model Device {
+  id              String   @id @default(cuid())
+  tenantId        String
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId          String?
+  user            User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  // Issued by an admin; the agent redeems it once on first run.
+  enrollmentToken String   @unique
+  enrolled        Boolean  @default(false)
+
+  hostname        String?
+  platform        String?
+  osVersion       String?
+  agentVersion    String?
+  lastSeenAt      DateTime?
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  activity ActivityLog[]
+  media    MediaAsset[]
+
+  @@index([tenantId])
+}
+
+model ActivityLog {
+  id            String       @id @default(cuid())
+  tenantId      String
+  tenant        Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  deviceId      String
+  device        Device       @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  userId        String?
+  user          User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  clientEventId String       @unique // idempotency for retried uploads
+  type          ActivityType
+  appName       String?
+  windowTitle   String?
+  url           String?
+  activeSeconds Int          @default(0)
+  capturedAt    DateTime
+  createdAt     DateTime     @default(now())
+
+  @@index([tenantId, capturedAt])
+  @@index([deviceId, capturedAt])
+}
+
+model MediaAsset {
+  id          String    @id @default(cuid())
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  deviceId    String
+  device      Device    @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  userId      String?
+  user        User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  kind            MediaKind
+  storageKey      String    @unique // object key in S3/MinIO
+  contentType     String
+  sizeBytes       Int?
+  durationSeconds Int?
+  capturedAt      DateTime
+  uploaded        Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+
+  @@index([tenantId, kind, capturedAt])
+  @@index([deviceId, capturedAt])
+}

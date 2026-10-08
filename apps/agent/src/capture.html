@@ -1,0 +1,61 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>capture</title>
+  </head>
+  <body>
+    <script>
+      // Hidden renderer: records the desktop stream in rotating chunks and
+      // ships each finished chunk to the main process for upload.
+      let recorder = null;
+      let stream = null;
+
+      async function begin({ sourceId, chunkSeconds, fps }) {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: false,
+            video: {
+              mandatory: {
+                chromeMediaSource: "desktop",
+                chromeMediaSourceId: sourceId,
+                maxFrameRate: fps,
+              },
+            },
+          });
+        } catch (e) {
+          console.error("capture getUserMedia failed", e);
+          return;
+        }
+
+        const startChunk = () => {
+          const chunks = [];
+          const started = Date.now();
+          recorder = new MediaRecorder(stream, { mimeType: "video/webm;codecs=vp8" });
+          recorder.ondataavailable = (ev) => ev.data.size > 0 && chunks.push(ev.data);
+          recorder.onstop = async () => {
+            const blob = new Blob(chunks, { type: "video/webm" });
+            const buf = await blob.arrayBuffer();
+            const duration = Math.round((Date.now() - started) / 1000);
+            await window.capture.sendChunk(buf, duration);
+            if (stream) startChunk(); // rotate to the next chunk
+          };
+          recorder.start();
+          setTimeout(() => recorder && recorder.state !== "inactive" && recorder.stop(), chunkSeconds * 1000);
+        };
+        startChunk();
+      }
+
+      function stop() {
+        if (recorder && recorder.state !== "inactive") recorder.stop();
+        if (stream) {
+          stream.getTracks().forEach((t) => t.stop());
+          stream = null;
+        }
+      }
+
+      window.capture.onBegin(begin);
+      window.capture.onStop(stop);
+    </script>
+  </body>
+</html>
