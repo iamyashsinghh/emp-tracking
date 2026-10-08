@@ -1,0 +1,12 @@
+**/node_modules
+**/dist
+**/.next
+**/*.tsbuildinfo
+**/*.log
+.git
+.github
+.env
+.env.*
+!.env.example
+apps/agent/release
+coverage

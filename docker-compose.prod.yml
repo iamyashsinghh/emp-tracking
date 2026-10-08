@@ -1,0 +1,40 @@
+# Production overlay. Used by the deploy workflow on the target host:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml pull
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Images come from GHCR (set BACKEND_IMAGE / BACKEND_MIGRATE_IMAGE /
+# DASHBOARD_IMAGE in the host's .env). Postgres and MinIO are not published
+# on host ports; put a TLS reverse proxy in front of backend/dashboard/minio.
+
+services:
+  postgres:
+    ports: !reset []
+    logging: &logging
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+  minio:
+    # Bound to localhost for a reverse proxy: agents upload to presigned URLs.
+    ports: !override
+      - "127.0.0.1:${MINIO_PORT:-9000}:9000"
+    logging: *logging
+
+  migrate:
+    build: !reset null
+    pull_policy: always
+    logging: *logging
+
+  backend:
+    build: !reset null
+    pull_policy: always
+    ports: !override
+      - "127.0.0.1:${BACKEND_PORT:-4000}:4000"
+    logging: *logging
+
+  dashboard:
+    build: !reset null
+    pull_policy: always
+    ports: !override
+      - "127.0.0.1:${DASHBOARD_PORT:-3000}:3000"
+    logging: *logging
