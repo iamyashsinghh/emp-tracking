@@ -1,0 +1,72 @@
+name: Tests
+
+on:
+  push:
+    branches: [staging]
+  pull_request:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: Unit tests (all workspaces)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm install
+      - name: Generate Prisma client
+        run: npm run prisma:generate -w apps/backend
+      - name: Typecheck test tooling
+        run: |
+          npm run typecheck -w packages/test-utils
+          npx tsc -p e2e/tsconfig.json
+      - name: Run unit tests
+        run: npm test -- --reporter=default --reporter=junit --outputFile.junit=reports/unit.xml
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-report
+          path: reports/
+          if-no-files-found: ignore
+
+  e2e:
+    name: End-to-end (enroll → ingest → dashboard)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: emptrack
+          POSTGRES_PASSWORD: emptrack
+          POSTGRES_DB: emptrack_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U emptrack"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://emptrack:emptrack@localhost:5432/emptrack_e2e?schema=public
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm install
+      - name: Build shared
+        run: npm run build -w packages/shared
+      - name: Build backend
+        run: npm run build -w apps/backend
+      - name: Run e2e
+        run: npm run test:e2e
+        env:
+          E2E_DEBUG: "1"

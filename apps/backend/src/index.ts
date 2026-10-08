@@ -7,7 +7,7 @@ import { tenantsRouter } from "./routes/tenants";
 import { usersRouter } from "./routes/users";
 import { agentRouter } from "./routes/agent";
 import { activityRouter } from "./routes/activity";
-import { mediaRouter } from "./routes/media";
+import { mediaRouter, mediaAdminRouter } from "./routes/media";
 import { reportsRouter } from "./routes/reports";
 
 const app = express();
@@ -30,6 +30,7 @@ app.use("/api/auth", authRouter);
 app.use("/api/tenants", tenantsRouter);
 app.use("/api/users", usersRouter);
 app.use("/api/reports", reportsRouter);
+app.use("/api/media", mediaAdminRouter);
 
 // Desktop agent API
 app.use("/api/agent", agentRouter);

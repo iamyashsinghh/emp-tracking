@@ -15,9 +15,18 @@
     "prisma:migrate": "npm run prisma:migrate -w apps/backend",
     "prisma:seed": "npm run seed -w apps/backend",
     "docker:up": "docker compose up -d --build",
-    "docker:down": "docker compose down"
+    "docker:down": "docker compose down",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "vitest run --config e2e/vitest.config.ts"
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "@emptrack/test-utils": "*",
+    "@vitest/coverage-v8": "^2.1.9",
+    "vitest": "^2.1.9"
   }
 }

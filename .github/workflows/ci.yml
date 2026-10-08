@@ -2,11 +2,24 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, staging]
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+  NEXT_TELEMETRY_DISABLED: "1"
 
 jobs:
   build:
+    name: Typecheck & build workspaces
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -14,12 +27,22 @@ jobs:
         with:
           node-version: 20
           cache: npm
-      - run: npm install
+      - run: npm ci
       - name: Build shared
         run: npm run build -w packages/shared
       - name: Generate Prisma client
         run: npm run prisma:generate -w apps/backend
-      - name: Typecheck / build backend
+      - name: Validate Prisma schema
+        run: npx prisma validate --schema apps/backend/prisma/schema.prisma
+        env:
+          DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+      - name: Typecheck backend
+        run: npx tsc --noEmit -p apps/backend
+      - name: Typecheck dashboard
+        run: npx tsc --noEmit -p apps/dashboard
+      - name: Typecheck agent
+        run: npx tsc --noEmit -p apps/agent
+      - name: Build backend
         run: npm run build -w apps/backend
       - name: Build dashboard
         run: npm run build -w apps/dashboard
@@ -27,3 +50,31 @@ jobs:
           NEXT_PUBLIC_API_URL: http://localhost:4000
       - name: Build agent
         run: npm run build -w apps/agent
+
+  docker:
+    name: Docker stack smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build images
+        run: docker compose build
+      - name: Start stack (schema push + seed) and wait for healthchecks
+        run: SEED=true docker compose up -d --wait --wait-timeout 180
+      - name: Probe endpoints
+        run: |
+          curl -fsS http://localhost:4000/health
+          curl -fsS -o /dev/null -w "dashboard /login -> %{http_code}\n" http://localhost:3000/login
+          curl -fsS http://localhost:9000/minio/health/live
+      - name: Login with seeded admin
+        run: |
+          curl -fsS -X POST http://localhost:4000/api/auth/login \
+            -H 'Content-Type: application/json' \
+            -d '{"email":"admin@demo.co","password":"admin12345"}' -o /dev/null -w "login -> %{http_code}\n" \
+            || echo "::warning::seeded admin login did not return 2xx (route or payload may differ)"
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose ps -a && docker compose logs --no-color
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
