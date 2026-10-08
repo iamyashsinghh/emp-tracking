@@ -117,7 +117,9 @@ app.whenReady().then(async () => {
   }
 });
 
-// Agent is a background service — don't quit when windows close.
-app.on("window-all-closed", (e: Electron.Event) => {
-  e.preventDefault();
+// Agent is a background service — keep running when all windows close.
+// Registering an (empty) handler overrides Electron's default quit-on-close
+// on Windows/Linux, so the agent stays alive in the tray.
+app.on("window-all-closed", () => {
+  // Intentionally left blank.
 });
