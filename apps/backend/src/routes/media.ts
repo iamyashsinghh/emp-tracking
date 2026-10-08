@@ -25,7 +25,7 @@ function intEnv(name: string, fallback: number): number {
   return Number.isFinite(v) && v > 0 ? v : fallback;
 }
 
-// How long media is kept before the retention sweep deletes it.
+// Default retention; TenantPolicy.mediaRetentionDays overrides it per tenant.
 const RETENTION_DAYS = intEnv("MEDIA_RETENTION_DAYS", 30);
 // Presigned uploads that were never confirmed are cleaned up after this.
 const PENDING_UPLOAD_TTL_HOURS = intEnv("MEDIA_PENDING_TTL_HOURS", 24);
@@ -253,10 +253,24 @@ async function purge(where: Prisma.MediaAssetWhereInput): Promise<number> {
  * never confirmed. Idempotent, so running it on several instances is safe.
  */
 export async function runMediaRetention(now = new Date()): Promise<{ expired: number; abandoned: number }> {
-  const expiredBefore = new Date(now.getTime() - RETENTION_DAYS * 24 * 60 * 60 * 1000);
+  const daysAgo = (days: number) => new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
   const pendingBefore = new Date(now.getTime() - PENDING_UPLOAD_TTL_HOURS * 60 * 60 * 1000);
 
-  const expired = await purge({ capturedAt: { lt: expiredBefore } });
+  // Tenants with their own retention window; everyone else gets the global one.
+  const overrides = await prisma.tenantPolicy.findMany({
+    where: { mediaRetentionDays: { not: null } },
+    select: { tenantId: true, mediaRetentionDays: true },
+  });
+
+  let expired = 0;
+  for (const o of overrides) {
+    if (!o.mediaRetentionDays || o.mediaRetentionDays <= 0) continue;
+    expired += await purge({ tenantId: o.tenantId, capturedAt: { lt: daysAgo(o.mediaRetentionDays) } });
+  }
+  expired += await purge({
+    tenantId: { notIn: overrides.map((o) => o.tenantId) },
+    capturedAt: { lt: daysAgo(RETENTION_DAYS) },
+  });
   const abandoned = await purge({ uploaded: false, createdAt: { lt: pendingBefore } });
   return { expired, abandoned };
 }
