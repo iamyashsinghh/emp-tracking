@@ -39,12 +39,15 @@ model Tenant {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  users         User[]
-  devices       Device[]
-  policy        TenantPolicy?
-  activity      ActivityLog[]
-  media         MediaAsset[]
-  refreshTokens RefreshToken[]
+  users             User[]
+  devices           Device[]
+  policy            TenantPolicy?
+  activity          ActivityLog[]
+  media             MediaAsset[]
+  refreshTokens     RefreshToken[]
+  teams             Team[]
+  teamMemberships   TeamMembership[]
+  productivityRules ProductivityRule[]
 }
 
 // Default monitoring policy for a company. Devices inherit this; a device
@@ -95,10 +98,11 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  devices       Device[]
-  activity      ActivityLog[]
-  media         MediaAsset[]
-  refreshTokens RefreshToken[]
+  devices         Device[]
+  activity        ActivityLog[]
+  media           MediaAsset[]
+  refreshTokens   RefreshToken[]
+  teamMemberships TeamMembership[]
 
   // Email is unique within a tenant, not globally.
   @@unique([tenantId, email])
@@ -193,5 +197,78 @@ model RefreshToken {
   createdAt DateTime  @default(now())
 
   @@index([userId])
+  @@index([tenantId])
+}
+
+// ---------------------------------------------------------------------------
+// Teams — let a manager scope to their team instead of the whole company.
+// ---------------------------------------------------------------------------
+
+enum TeamRole {
+  MEMBER
+  MANAGER
+}
+
+model Team {
+  id        String   @id @default(cuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members TeamMembership[]
+
+  // Team names are unique within a company.
+  @@unique([tenantId, name])
+  @@index([tenantId])
+}
+
+model TeamMembership {
+  id        String   @id @default(cuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  teamId    String
+  team      Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      TeamRole @default(MEMBER)
+  createdAt DateTime @default(now())
+
+  // A user appears at most once per team.
+  @@unique([teamId, userId])
+  @@index([tenantId])
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Productivity rules — per-company classification of apps / sites, so each
+// company defines productive vs unproductive instead of a built-in list.
+// ---------------------------------------------------------------------------
+
+enum RuleMatchType {
+  APP
+  URL_DOMAIN
+}
+
+enum ProductivityClass {
+  PRODUCTIVE
+  UNPRODUCTIVE
+  NEUTRAL
+}
+
+model ProductivityRule {
+  id             String            @id @default(cuid())
+  tenantId       String
+  tenant         Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  matchType      RuleMatchType
+  // App identifier (process/app name) or URL domain, matched case-insensitively.
+  pattern        String
+  classification ProductivityClass @default(NEUTRAL)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  // One rule per (type, pattern) within a company.
+  @@unique([tenantId, matchType, pattern])
   @@index([tenantId])
 }

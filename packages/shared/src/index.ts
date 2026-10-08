@@ -255,3 +255,64 @@ export interface DeviceEnrollmentTicket {
   deviceId: string;
   enrollmentToken: string;
 }
+
+// ---------------------------------------------------------------------------
+// Teams & productivity rules (reporting)
+// ---------------------------------------------------------------------------
+
+export const TeamRole = { Member: "MEMBER", Manager: "MANAGER" } as const;
+export type TeamRole = (typeof TeamRole)[keyof typeof TeamRole];
+
+export const RuleMatchType = { App: "APP", UrlDomain: "URL_DOMAIN" } as const;
+export type RuleMatchType = (typeof RuleMatchType)[keyof typeof RuleMatchType];
+
+export const ProductivityClass = {
+  Productive: "PRODUCTIVE",
+  Unproductive: "UNPRODUCTIVE",
+  Neutral: "NEUTRAL",
+} as const;
+export type ProductivityClass = (typeof ProductivityClass)[keyof typeof ProductivityClass];
+
+export const createTeamSchema = z.object({
+  name: z.string().min(1),
+});
+export type CreateTeamInput = z.infer<typeof createTeamSchema>;
+
+export const addTeamMemberSchema = z.object({
+  userId: z.string().min(1),
+  role: z.enum([TeamRole.Member, TeamRole.Manager]).default(TeamRole.Member),
+});
+export type AddTeamMemberInput = z.infer<typeof addTeamMemberSchema>;
+
+export const createProductivityRuleSchema = z.object({
+  matchType: z.enum([RuleMatchType.App, RuleMatchType.UrlDomain]),
+  pattern: z.string().min(1),
+  classification: z
+    .enum([ProductivityClass.Productive, ProductivityClass.Unproductive, ProductivityClass.Neutral])
+    .default(ProductivityClass.Neutral),
+});
+export type CreateProductivityRuleInput = z.infer<typeof createProductivityRuleSchema>;
+
+export interface TeamDTO {
+  id: string;
+  tenantId: string;
+  name: string;
+  memberCount?: number;
+  createdAt: string;
+}
+
+export interface TeamMembershipDTO {
+  id: string;
+  teamId: string;
+  userId: string;
+  role: TeamRole;
+  user?: Pick<UserDTO, "id" | "name" | "email">;
+}
+
+export interface ProductivityRuleDTO {
+  id: string;
+  tenantId: string;
+  matchType: RuleMatchType;
+  pattern: string;
+  classification: ProductivityClass;
+}
