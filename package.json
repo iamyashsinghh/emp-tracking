@@ -1,0 +1,23 @@
+{
+  "name": "emp-tracking",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Multi-tenant employee monitoring SaaS: desktop agent + backend API + admin dashboard",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build:shared": "npm run build -w packages/shared",
+    "dev:backend": "npm run dev -w apps/backend",
+    "dev:dashboard": "npm run dev -w apps/dashboard",
+    "dev:agent": "npm run dev -w apps/agent",
+    "prisma:migrate": "npm run prisma:migrate -w apps/backend",
+    "prisma:seed": "npm run seed -w apps/backend",
+    "docker:up": "docker compose up -d --build",
+    "docker:down": "docker compose down"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Enroll device</title>
+    <style>
+      body { font-family: system-ui, sans-serif; background: #0b1220; color: #e6edf7; padding: 24px; }
+      h1 { font-size: 18px; }
+      label { display: block; font-size: 12px; color: #9ab; margin-top: 14px; }
+      input { width: 100%; padding: 9px 10px; margin-top: 4px; background: #131c2e; border: 1px solid #334; border-radius: 6px; color: #e6edf7; box-sizing: border-box; }
+      button { margin-top: 18px; width: 100%; padding: 10px; background: #3b82f6; color: #fff; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; }
+      .err { color: #f87171; font-size: 12px; margin-top: 10px; }
+    </style>
+  </head>
+  <body>
+    <h1>Enroll this device</h1>
+    <p style="font-size:12px;color:#9ab;margin-top:-6px">Enter the enrollment token your administrator gave you.</p>
+    <label>Server URL</label>
+    <input id="server" value="http://localhost:4000" />
+    <label>Enrollment token</label>
+    <input id="token" placeholder="paste token" />
+    <div class="err" id="err"></div>
+    <button id="go">Enroll</button>
+    <script>
+      const err = document.getElementById("err");
+      document.getElementById("go").addEventListener("click", async () => {
+        err.textContent = "";
+        const token = document.getElementById("token").value.trim();
+        const server = document.getElementById("server").value.trim();
+        if (!token) { err.textContent = "Token is required"; return; }
+        const res = await window.enroll.submit(token, server);
+        if (!res.ok) err.textContent = res.error || "Enrollment failed";
+      });
+    </script>
+  </body>
+</html>
