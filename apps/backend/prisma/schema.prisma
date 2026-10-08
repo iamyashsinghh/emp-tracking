@@ -39,11 +39,12 @@ model Tenant {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  users    User[]
-  devices  Device[]
-  policy   TenantPolicy?
-  activity ActivityLog[]
-  media    MediaAsset[]
+  users         User[]
+  devices       Device[]
+  policy        TenantPolicy?
+  activity      ActivityLog[]
+  media         MediaAsset[]
+  refreshTokens RefreshToken[]
 }
 
 // Default monitoring policy for a company. Devices inherit this; a device
@@ -63,6 +64,17 @@ model TenantPolicy {
   screenRecordingEnabled   Boolean @default(false)
   recordingChunkSeconds    Int     @default(300)
   recordingFps             Int     @default(5)
+  recordingBitrateKbps     Int     @default(1500)
+
+  // Canonical capture controls (shared with devicePolicySchema).
+  excludedApps             String[] @default([])
+  activeWindowOnly         Boolean  @default(true)
+  screenshotDailyCap       Int      @default(0)
+  recordingDailyCapMinutes Int      @default(0)
+
+  // Per-company media retention in days; null = keep indefinitely (global default).
+  mediaRetentionDays       Int?
+
   showTrayIcon             Boolean @default(true)
   notifyEmployeeOnStart    Boolean @default(true)
   workingHoursStart        String?
@@ -83,9 +95,10 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  devices  Device[]
-  activity ActivityLog[]
-  media    MediaAsset[]
+  devices       Device[]
+  activity      ActivityLog[]
+  media         MediaAsset[]
+  refreshTokens RefreshToken[]
 
   // Email is unique within a tenant, not globally.
   @@unique([tenantId, email])
@@ -128,7 +141,7 @@ model ActivityLog {
   userId        String?
   user          User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
 
-  clientEventId String       @unique // idempotency for retried uploads
+  clientEventId String       // idempotency for retried uploads (scoped per device)
   type          ActivityType
   appName       String?
   windowTitle   String?
@@ -137,6 +150,9 @@ model ActivityLog {
   capturedAt    DateTime
   createdAt     DateTime     @default(now())
 
+  // clientEventId is unique per device, not globally, so two devices can
+  // independently reuse ids without colliding (createMany skipDuplicates).
+  @@unique([deviceId, clientEventId])
   @@index([tenantId, capturedAt])
   @@index([deviceId, capturedAt])
 }
@@ -161,4 +177,21 @@ model MediaAsset {
 
   @@index([tenantId, kind, capturedAt])
   @@index([deviceId, capturedAt])
+}
+
+// Durable refresh-token store (replaces in-memory revocation that reset on
+// restart). Tenant-isolated; the raw token is never stored, only its hash.
+model RefreshToken {
+  id        String    @id @default(cuid())
+  tenantId  String
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@index([tenantId])
 }
