@@ -47,7 +47,7 @@ export default function ActivityPage() {
     return (id: string) => m.get(id);
   }, [devices]);
   const apps = useMemo(() => topApps(logs), [logs]);
-  const sites = useTopSites(!!claims, rangeKey, { userId: userId || undefined, deviceId: deviceId || undefined }, logs, setError);
+  const sites = useTopSites(claims, rangeKey, { userId: userId || undefined, deviceId: deviceId || undefined }, setError);
 
   return (
     <Shell title="Activity" claims={claims}>

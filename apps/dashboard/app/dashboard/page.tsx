@@ -46,7 +46,6 @@ export default function Overview() {
   const [devices, setDevices] = useState<Device[]>([]);
   const [recent, setRecent] = useState<ActivityLog[]>([]);
   const [apps, setApps] = useState<AppSummary[]>([]);
-  const [logs, setLogs] = useState<ActivityLog[]>([]);
   const [media, setMedia] = useState<MediaItem[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -72,19 +71,17 @@ export default function Overview() {
     };
   }, [claims]);
 
-  // Top apps / sites / media for the selected range.
+  // Top apps / media for the selected range.
   useEffect(() => {
     if (!claims) return;
     const range = rangeFor(rangeKey);
     (async () => {
       try {
-        const [a, l, m] = await Promise.all([
+        const [a, m] = await Promise.all([
           fetchAppSummary(range),
-          fetchActivity(range),
           api<MediaItem[]>(`/api/reports/media?from=${range.from.toISOString()}&to=${range.to.toISOString()}`),
         ]);
         setApps(a);
-        setLogs(l);
         setMedia(m);
       } catch (e) {
         setError((e as Error).message);
@@ -98,7 +95,7 @@ export default function Overview() {
     for (const d of devices) c[deviceStatus(d, lastEvents[d.id], now)]++;
     return c;
   }, [devices, lastEvents, now]);
-  const sites = useTopSites(!!claims, rangeKey, {}, logs, setError);
+  const sites = useTopSites(claims, rangeKey, {}, setError);
 
   return (
     <Shell title="Activity overview" claims={claims}>

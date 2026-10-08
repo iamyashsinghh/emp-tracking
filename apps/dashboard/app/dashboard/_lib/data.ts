@@ -83,38 +83,50 @@ export function fetchActivity(range: TimeRange, filter: { userId?: string; devic
   );
 }
 
-// Exact per-site totals aggregated server-side. Resolves to null when the
-// backend predates this endpoint, so callers can fall back to topSites(logs).
-export async function fetchSiteSummary(
-  range: TimeRange,
-  filter: { userId?: string; deviceId?: string } = {}
-): Promise<SiteSummary[] | null> {
-  try {
-    return await api<SiteSummary[]>(
-      `/api/reports/sites/summary${query({ from: range.from.toISOString(), to: range.to.toISOString(), ...filter })}`
-    );
-  } catch (e) {
-    if (/\b404\b/.test((e as Error).message)) return null;
-    throw e;
-  }
+// Exact per-site totals, aggregated server-side over every sample in range.
+export function fetchSiteSummary(range: TimeRange, filter: { userId?: string; deviceId?: string } = {}) {
+  return api<SiteSummary[]>(
+    `/api/reports/sites/summary${query({ from: range.from.toISOString(), to: range.to.toISOString(), ...filter })}`
+  );
 }
 
 // --- Tenant context ---------------------------------------------------------
 
 export interface TokenClaims {
+  /** Company being viewed; every reports call is scoped to it. */
   tenantId: string;
+  tenantName: string | null;
   role: string;
   email: string;
 }
 
-// The active company comes from the signed-in token; the backend enforces it.
+// The active company comes from the dashboard session that lib/api.ts keeps in
+// localStorage (it sends that company as X-Tenant-Id on every request). With
+// no session record, fall back to the signed-in token's own company.
 export function activeTenant(): TokenClaims | null {
+  try {
+    const raw = window.localStorage.getItem("emptrack_session");
+    if (raw) {
+      const s = JSON.parse(raw) as {
+        activeTenantId?: string;
+        tenants?: { id: string; name: string }[];
+        user?: { email: string; role: string; tenantId: string };
+      };
+      const tenantId = s.activeTenantId ?? s.user?.tenantId;
+      if (tenantId && s.user) {
+        const name = s.tenants?.find((t) => t.id === tenantId)?.name ?? null;
+        return { tenantId, tenantName: name, role: s.user.role, email: s.user.email };
+      }
+    }
+  } catch {
+    // Fall through to the token.
+  }
   const token = getToken();
   if (!token) return null;
   try {
     const payload = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
     const claims = JSON.parse(atob(payload));
-    return { tenantId: claims.tenantId, role: claims.role, email: claims.email };
+    return { tenantId: claims.tenantId, tenantName: null, role: claims.role, email: claims.email };
   } catch {
     return null;
   }
@@ -166,20 +178,6 @@ export function topApps(logs: ActivityLog[], limit = 10): AppSummary[] {
   }
   return [...totals.entries()]
     .map(([appName, activeSeconds]) => ({ appName, activeSeconds }))
-    .sort((a, b) => b.activeSeconds - a.activeSeconds)
-    .slice(0, limit);
-}
-
-export function topSites(logs: ActivityLog[], limit = 10): SiteSummary[] {
-  const totals = new Map<string, number>();
-  for (const l of logs) {
-    if (l.type !== "APP_ACTIVE") continue;
-    const site = siteOf(l.url);
-    if (!site) continue;
-    totals.set(site, (totals.get(site) ?? 0) + l.activeSeconds);
-  }
-  return [...totals.entries()]
-    .map(([site, activeSeconds]) => ({ site, activeSeconds }))
     .sort((a, b) => b.activeSeconds - a.activeSeconds)
     .slice(0, limit);
 }

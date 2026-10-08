@@ -69,7 +69,7 @@ export default function DeviceDetail() {
   }, [claims, id, rangeKey]);
 
   const apps = useMemo(() => topApps(logs), [logs]);
-  const sites = useTopSites(!!claims && !!id, rangeKey, { deviceId: id }, logs, setError);
+  const sites = useTopSites(id ? claims : null, rangeKey, { deviceId: id }, setError);
   const activeSeconds = useMemo(() => logs.reduce((s, l) => s + (l.type === "APP_ACTIVE" ? l.activeSeconds : 0), 0), [logs]);
   const idleCount = useMemo(() => logs.filter((l) => l.type === "IDLE_START").length, [logs]);
   const latest = logs[0];

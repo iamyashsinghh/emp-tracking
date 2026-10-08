@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { clearToken, getToken } from "../../../lib/api";
 import {
   ActivityLog,
@@ -18,23 +18,40 @@ import {
   relativeTime,
   siteOf,
   SiteSummary,
-  topSites,
   STATUS_META,
   TokenClaims,
 } from "../_lib/data";
 
 export const muted = "#9ab";
 
-// Redirects to /login when signed out; returns the active tenant claims.
+// Redirects to /login when signed out; returns the active company context.
+// Re-reads it on cross-tab storage events and on a short tick, so switching
+// company anywhere in the app re-scopes (and refetches) these views. The
+// returned object only changes identity when the context actually changes.
 export function useAuthGuard(): TokenClaims | null {
   const router = useRouter();
   const [claims, setClaims] = useState<TokenClaims | null>(null);
   useEffect(() => {
-    if (!getToken()) {
-      router.replace("/login");
-      return;
-    }
-    setClaims(activeTenant());
+    let last = "";
+    const sync = () => {
+      if (!getToken()) {
+        router.replace("/login");
+        return;
+      }
+      const next = activeTenant();
+      const key = JSON.stringify(next);
+      if (key !== last) {
+        last = key;
+        setClaims(next);
+      }
+    };
+    sync();
+    const t = setInterval(sync, 2_000);
+    window.addEventListener("storage", sync);
+    return () => {
+      clearInterval(t);
+      window.removeEventListener("storage", sync);
+    };
   }, [router]);
   return claims;
 }
@@ -49,36 +66,35 @@ export function useNow(ms = 30_000) {
   return now;
 }
 
-// Top websites for a range: exact server totals when the backend supports
-// them, otherwise derived from the already-loaded (capped) timeline.
+// Top websites for a range, from the server-side per-site summary.
 export function useTopSites(
-  enabled: boolean,
+  claims: TokenClaims | null,
   rangeKey: RangeKey,
   filter: { userId?: string; deviceId?: string },
-  logs: ActivityLog[],
   onError: (msg: string) => void
 ): SiteSummary[] {
-  const [server, setServer] = useState<SiteSummary[] | null>(null);
+  const [sites, setSites] = useState<SiteSummary[]>([]);
   const { userId, deviceId } = filter;
   useEffect(() => {
-    if (!enabled) return;
+    if (!claims) return;
     let cancelled = false;
     fetchSiteSummary(rangeFor(rangeKey), { userId, deviceId })
-      .then((s) => !cancelled && setServer(s))
+      .then((s) => !cancelled && setSites(s.slice(0, 10)))
       .catch((e: Error) => !cancelled && onError(e.message));
     return () => {
       cancelled = true;
     };
     // onError is a state setter; stable across renders.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, rangeKey, userId, deviceId]);
-  return useMemo(() => (server ? server.slice(0, 10) : topSites(logs)), [server, logs]);
+  }, [claims, rangeKey, userId, deviceId]);
+  return sites;
 }
 
 const NAV = [
   { href: "/dashboard", label: "Overview" },
   { href: "/dashboard/devices", label: "Devices" },
   { href: "/dashboard/activity", label: "Activity" },
+  { href: "/dashboard/settings", label: "Settings" },
 ];
 
 export function Shell({ title, claims, children }: { title: string; claims: TokenClaims | null; children: React.ReactNode }) {
@@ -95,7 +111,7 @@ export function Shell({ title, claims, children }: { title: string; claims: Toke
           <h1 style={{ fontSize: 24, margin: 0 }}>{title}</h1>
           {claims && (
             <p style={{ color: muted, fontSize: 13, margin: "4px 0 0" }}>
-              Company <code>{claims.tenantId}</code> · {claims.email} ({claims.role})
+              {claims.tenantName ?? <code>{claims.tenantId}</code>} · {claims.email} ({claims.role})
             </p>
           )}
         </div>
