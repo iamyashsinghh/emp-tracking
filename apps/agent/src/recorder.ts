@@ -1,4 +1,5 @@
 import path from "path";
+import activeWin from "active-win";
 import { BrowserWindow, desktopCapturer, ipcMain, powerMonitor, systemPreferences } from "electron";
 import { DevicePolicy } from "@emptrack/shared";
 import { uploadMedia } from "./uploader";
@@ -9,30 +10,34 @@ import { uploadMedia } from "./uploader";
  * Recording only ever runs when tenant policy has screenRecordingEnabled true;
  * the tray icon (main.ts) always shows that state to the employee. A hidden
  * renderer window runs MediaRecorder on the captured desktop stream (the only
- * place the browser media APIs exist), restarts the recorder every
- * recordingChunkSeconds so each chunk is a standalone playable WebM, and hands
- * each finished chunk back to the main process over IPC. Chunks are queued and
- * streamed to the uploader one at a time, with retry so a flaky network does
- * not drop video.
+ * place the browser media APIs exist). The main process drives one chunk at a
+ * time: it picks the capture source (the foreground window when the policy's
+ * activeWindowOnly is set, otherwise the whole screen), tells the renderer to
+ * record for recordingChunkSeconds, then collects the finished WebM and queues
+ * it for upload. Each chunk is a standalone, playable file.
  *
- * Recording pauses on its own when the screen locks, the machine sleeps, or the
- * clock is outside the policy's working hours, and resumes afterwards. It stops
- * cleanly on policy-off and on app quit, flushing the final partial chunk.
+ * Everything is bound to the canonical policy fields: screenRecordingEnabled
+ * (on/off), recordingChunkSeconds, recordingFps, recordingBitrateKbps,
+ * activeWindowOnly, recordingDailyCapMinutes, and workingHoursStart/End.
+ *
+ * Recording pauses on its own when the screen locks, the machine sleeps, the
+ * clock is outside working hours, or the per-day recording cap is reached, and
+ * resumes afterwards. It stops cleanly on policy-off and on app quit, flushing
+ * the final partial chunk.
  */
 
-export interface RecorderSettings {
+interface ChunkRequest {
+  session: number;
+  seq: number;
   sourceId: string;
-  chunkSeconds: number;
   fps: number;
-  maxWidth: number;
-  maxHeight: number;
-  videoBitsPerSecond: number;
+  bitsPerSecond: number;
 }
 
-interface ChunkPayload {
+interface ChunkResult {
   session: number;
+  seq: number;
   buffer: ArrayBuffer;
-  startedAt: string;
   durationSeconds: number;
 }
 
@@ -42,32 +47,13 @@ interface QueuedChunk {
   attempts: number;
 }
 
-// Local tuning the policy doesn't expose. Screen content at a low frame rate
-// compresses well, so bitrate scales with fps from a modest base.
-const MAX_WIDTH = 1920;
-const MAX_HEIGHT = 1080;
-const BASE_BITS_PER_SECOND = 300_000;
-const BITS_PER_FPS = 60_000;
-
-const RESTART_DELAY_MS = 15_000;
+const RETRY_DELAY_MS = 15_000;
 const WORKING_HOURS_CHECK_MS = 30_000;
 const MAX_UPLOAD_ATTEMPTS = 5;
 const MAX_QUEUED_BYTES = 500 * 1024 * 1024;
 
-type PauseReason = "locked" | "suspended" | "off-hours";
+type PauseReason = "locked" | "suspended" | "off-hours" | "daily-cap";
 
-export function settingsFromPolicy(policy: DevicePolicy, sourceId: string): RecorderSettings {
-  return {
-    sourceId,
-    chunkSeconds: policy.recordingChunkSeconds,
-    fps: policy.recordingFps,
-    maxWidth: MAX_WIDTH,
-    maxHeight: MAX_HEIGHT,
-    videoBitsPerSecond: BASE_BITS_PER_SECOND + BITS_PER_FPS * policy.recordingFps,
-  };
-}
-
-/** True when `now` is inside the policy's working hours (or none are set). */
 export function withinWorkingHours(policy: DevicePolicy, now = new Date()): boolean {
   const { workingHoursStart: start, workingHoursEnd: end } = policy;
   if (!start || !end) return true;
@@ -83,75 +69,82 @@ export function withinWorkingHours(policy: DevicePolicy, now = new Date()): bool
   return s < e ? cur >= s && cur < e : cur >= s || cur < e;
 }
 
+/** Local calendar day key, so the daily cap resets at the device's midnight. */
+function dayKey(now = new Date()): string {
+  return `${now.getFullYear()}-${now.getMonth()}-${now.getDate()}`;
+}
+
 export class ScreenRecorder {
   private win: BrowserWindow | null = null;
-  private recording = false;
-  private starting: Promise<void> | null = null;
-  private stopping: Promise<void> | null = null;
-  // Bumped on every launch so chunks and signals from a torn-down renderer
+  private loopRunning = false;
+  private quitting = false;
+
+  // Bumped on every (re)start so chunks and signals from a torn-down renderer
   // can't be confused with the current session.
   private session = 0;
-  private stoppedSignal: (() => void) | null = null;
+  private seq = 0;
+  private pending: { seq: number; resolve: (r: ChunkResult | null) => void } | null = null;
 
   private readonly paused = new Set<PauseReason>();
   private hoursTimer: NodeJS.Timeout | null = null;
-  private restartTimer: NodeJS.Timeout | null = null;
+  private capTimer: NodeJS.Timeout | null = null;
+  private retryTimer: NodeJS.Timeout | null = null;
+
+  // Daily recording budget.
+  private capDay = dayKey();
+  private recordedSecondsToday = 0;
 
   private queue: QueuedChunk[] = [];
   private queuedBytes = 0;
   private draining = false;
-  private quitting = false;
 
   constructor(private policy: DevicePolicy) {
     this.registerIpc();
     this.registerSystemEvents();
   }
 
-  /** Whether policy wants recording right now, ignoring transient pauses. */
   private get wanted() {
     return this.policy.monitoringEnabled && this.policy.screenRecordingEnabled && !this.quitting;
   }
 
   get isRecording() {
-    return this.recording;
+    return this.loopRunning;
   }
 
   updatePolicy(policy: DevicePolicy) {
-    const prev = this.policy;
     this.policy = policy;
     this.syncWorkingHoursTimer();
     this.updateOffHours();
-
-    const settingsChanged =
-      prev.recordingChunkSeconds !== policy.recordingChunkSeconds || prev.recordingFps !== policy.recordingFps;
-    if (this.recording && this.wanted && this.paused.size === 0 && settingsChanged) {
-      // New chunk length / fps only take effect on a fresh MediaRecorder.
-      void this.restart();
-      return;
-    }
-    void this.reconcile();
+    this.updateDailyCap();
+    this.reconcile();
   }
 
   async start() {
     this.syncWorkingHoursTimer();
     this.updateOffHours();
-    await this.reconcile();
+    this.updateDailyCap();
+    this.reconcile();
   }
 
-  /** Stop recording and wait for the final partial chunk to be queued. */
+  /** Stop recording; the in-flight chunk is flushed and queued. */
   async stop() {
-    this.clearRestartTimer();
-    if (this.starting) await this.starting.catch(() => undefined);
-    if (!this.win) {
-      this.recording = false;
-      return;
+    this.clearRetryTimer();
+    if (this.loopRunning) {
+      this.loopRunning = false;
+      // Ask the renderer to finish the current chunk early; the loop will
+      // collect it and then tear the window down.
+      if (this.win && !this.win.isDestroyed()) {
+        try {
+          this.win.webContents.send("recorder:end-chunk");
+        } catch {
+          /* window already gone */
+        }
+      }
     }
-    if (!this.stopping) {
-      this.stopping = this.teardown().finally(() => {
-        this.stopping = null;
-      });
-    }
-    await this.stopping;
+    // Wait for any in-flight chunk request to settle so the window isn't
+    // destroyed out from under it.
+    while (this.pending) await new Promise((r) => setTimeout(r, 50));
+    this.destroyWindow();
   }
 
   /** Stop for good on app quit: flush the last chunk and try to upload it. */
@@ -159,59 +152,199 @@ export class ScreenRecorder {
     this.quitting = true;
     if (this.hoursTimer) clearInterval(this.hoursTimer);
     this.hoursTimer = null;
+    if (this.capTimer) clearTimeout(this.capTimer);
+    this.capTimer = null;
     await this.stop();
     await this.drain();
   }
 
   // ---------------------------------------------------------------------------
-  // Lifecycle
+  // Capture loop
   // ---------------------------------------------------------------------------
 
-  /** Bring the actual recorder state in line with policy + pauses. */
-  private async reconcile() {
+  private reconcile() {
     const shouldRecord = this.wanted && this.paused.size === 0;
-    if (shouldRecord && !this.recording && !this.starting) {
-      this.starting = this.launch().finally(() => {
-        this.starting = null;
-      });
-      await this.starting;
-    } else if (!shouldRecord && (this.recording || this.win)) {
-      await this.stop();
+    if (shouldRecord && !this.loopRunning) {
+      void this.runLoop();
+    } else if (!shouldRecord && this.loopRunning) {
+      void this.stop();
     }
   }
 
-  private async restart() {
-    await this.stop();
-    await this.reconcile();
-  }
+  private async runLoop() {
+    if (this.loopRunning) return;
+    this.loopRunning = true;
+    const session = ++this.session;
 
-  private async launch() {
-    if (this.stopping) await this.stopping.catch(() => undefined);
-    if (!this.wanted || this.paused.size > 0) return;
-
-    if (process.platform === "darwin") {
-      // macOS gates screen capture behind a system permission. Until it is
-      // granted we'd only record a blank desktop, so don't start; asking for
-      // sources surfaces the OS prompt, then we retry later.
-      const status = systemPreferences.getMediaAccessStatus("screen");
-      if (status !== "granted") {
-        await desktopCapturer.getSources({ types: ["screen"], thumbnailSize: { width: 0, height: 0 } }).catch(() => []);
-        console.warn(`[recorder] screen capture permission is "${status}"; will retry`);
-        this.scheduleRestart();
+    try {
+      if (!(await this.ensureScreenPermission())) {
+        this.loopRunning = false;
+        this.scheduleRetry();
         return;
       }
-    }
+      if (!(await this.ensureWindow())) {
+        this.loopRunning = false;
+        this.scheduleRetry();
+        return;
+      }
 
-    const sourceId = await this.primarySourceId();
-    if (!sourceId) {
-      console.warn("[recorder] no screen source available; will retry");
-      this.scheduleRestart();
-      return;
-    }
-    if (!this.wanted || this.paused.size > 0) return;
+      while (this.loopRunning && session === this.session && this.wanted && this.paused.size === 0) {
+        if (this.capReached()) {
+          this.enterDailyCapPause();
+          break;
+        }
 
-    const settings = settingsFromPolicy(this.policy, sourceId);
-    const session = ++this.session;
+        const sourceId = await this.pickSourceId();
+        if (!sourceId) {
+          // No capturable source right now; back off and retry.
+          this.scheduleRetry();
+          break;
+        }
+
+        const seconds = this.chunkSecondsRespectingCap();
+        const result = await this.recordOneChunk(session, sourceId, seconds);
+        if (!result) break;
+
+        if (result.buffer.byteLength > 0) {
+          this.enqueue({
+            bytes: Buffer.from(result.buffer),
+            durationSeconds: result.durationSeconds,
+            attempts: 0,
+          });
+          this.addRecordedSeconds(result.durationSeconds);
+        }
+      }
+    } catch (err) {
+      console.warn("[recorder] capture loop error:", (err as Error).message);
+      this.scheduleRetry();
+    } finally {
+      this.loopRunning = false;
+      if (!this.wanted || this.paused.size > 0 || this.quitting) this.destroyWindow();
+    }
+  }
+
+  /**
+   * Record a single chunk: tell the renderer to begin, let it run for `seconds`
+   * (unless stop() ends it early), and resolve with the finished bytes.
+   */
+  private recordOneChunk(session: number, sourceId: string, seconds: number): Promise<ChunkResult | null> {
+    return new Promise<ChunkResult | null>((resolve) => {
+      const win = this.win;
+      if (!win || win.isDestroyed()) {
+        resolve(null);
+        return;
+      }
+      const seq = ++this.seq;
+      let timer: NodeJS.Timeout | null = null;
+      let settled = false;
+
+      const finish = (r: ChunkResult | null) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        this.pending = null;
+        resolve(r);
+      };
+
+      this.pending = {
+        seq,
+        resolve: (r) => finish(r),
+      };
+
+      const req: ChunkRequest = {
+        session,
+        seq,
+        sourceId,
+        fps: this.policy.recordingFps,
+        bitsPerSecond: this.policy.recordingBitrateKbps * 1000,
+      };
+      try {
+        win.webContents.send("recorder:begin-chunk", req);
+      } catch {
+        finish(null);
+        return;
+      }
+
+      // End the chunk after its configured length; the renderer flushes and
+      // delivers, which resolves `pending`. Guard with a grace window in case
+      // the renderer never answers.
+      timer = setTimeout(() => {
+        if (this.win && !this.win.isDestroyed()) {
+          try {
+            this.win.webContents.send("recorder:end-chunk");
+          } catch {
+            /* ignore */
+          }
+        }
+        // If no delivery arrives shortly after we asked it to end, give up on
+        // this chunk so the loop can recover.
+        setTimeout(() => finish(null), RETRY_DELAY_MS);
+      }, seconds * 1000);
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Source selection
+  // ---------------------------------------------------------------------------
+
+  private async ensureScreenPermission(): Promise<boolean> {
+    if (process.platform !== "darwin") return true;
+    // macOS gates screen capture behind a system permission. Until it is
+    // granted we'd only record a blank desktop, so don't start; asking for
+    // sources surfaces the OS prompt, then we retry later.
+    const status = systemPreferences.getMediaAccessStatus("screen");
+    if (status === "granted") return true;
+    await desktopCapturer.getSources({ types: ["screen"], thumbnailSize: { width: 0, height: 0 } }).catch(() => []);
+    console.warn(`[recorder] screen capture permission is "${status}"; will retry`);
+    return false;
+  }
+
+  /**
+   * Pick the capture source for the next chunk. With activeWindowOnly we try to
+   * record just the foreground window, matching it to a desktopCapturer window
+   * source; if we can't resolve it we fall back to the whole primary screen so
+   * recording never silently stops.
+   */
+  private async pickSourceId(): Promise<string | null> {
+    if (this.policy.activeWindowOnly) {
+      const windowId = await this.activeWindowSourceId().catch(() => null);
+      if (windowId) return windowId;
+    }
+    const screens = await desktopCapturer
+      .getSources({ types: ["screen"], thumbnailSize: { width: 0, height: 0 } })
+      .catch(() => []);
+    return screens.length > 0 ? screens[0].id : null;
+  }
+
+  private async activeWindowSourceId(): Promise<string | null> {
+    const win = await activeWin();
+    if (!win) return null;
+    const sources = await desktopCapturer
+      .getSources({ types: ["window"], thumbnailSize: { width: 0, height: 0 } })
+      .catch(() => []);
+    if (sources.length === 0) return null;
+
+    // desktopCapturer window ids look like "window:<nativeId>:<n>"; match the
+    // numeric native id when we can, then fall back to the window title.
+    const nativeId = String((win as any).id ?? "");
+    if (nativeId) {
+      const byId = sources.find((s) => s.id.split(":")[1] === nativeId);
+      if (byId) return byId.id;
+    }
+    const title = win.title?.trim();
+    if (title) {
+      const byTitle = sources.find((s) => s.name.trim() === title);
+      if (byTitle) return byTitle.id;
+    }
+    return null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Hidden renderer window
+  // ---------------------------------------------------------------------------
+
+  private async ensureWindow(): Promise<boolean> {
+    if (this.win && !this.win.isDestroyed()) return true;
     const win = new BrowserWindow({
       show: false,
       skipTaskbar: true,
@@ -225,79 +358,24 @@ export class ScreenRecorder {
       },
     });
     this.win = win;
-    this.recording = true;
-
     try {
       await win.loadFile(path.join(__dirname, "capture.html"));
+      return !win.isDestroyed();
     } catch (err) {
       console.warn("[recorder] failed to load capture page:", (err as Error).message);
-      this.recording = false;
-      this.win = null;
-      if (!win.isDestroyed()) win.destroy();
-      this.scheduleRestart();
-      return;
+      this.destroyWindow();
+      return false;
     }
-
-    if (session !== this.session || win.isDestroyed()) return;
-    win.webContents.send("recorder:begin", { ...settings, session });
   }
 
-  /** Signal the renderer to stop, wait for the final chunk, then destroy. */
-  private async teardown() {
+  private destroyWindow() {
     const win = this.win;
-    if (!win) {
-      this.recording = false;
-      return;
-    }
-
-    const flushed = new Promise<void>((resolve) => {
-      let done = false;
-      const finish = () => {
-        if (done) return;
-        done = true;
-        this.stoppedSignal = null;
-        resolve();
-      };
-      this.stoppedSignal = finish;
-      // Don't hang teardown forever if the renderer is wedged.
-      setTimeout(finish, RESTART_DELAY_MS);
-    });
-
-    if (!win.isDestroyed()) {
-      try {
-        win.webContents.send("recorder:stop");
-      } catch {
-        /* window already gone */
-      }
-    }
-    await flushed;
-
-    this.recording = false;
     this.win = null;
-    if (!win.isDestroyed()) win.destroy();
-    void this.drain();
-  }
-
-  private async primarySourceId(): Promise<string | null> {
-    const sources = await desktopCapturer.getSources({ types: ["screen"], thumbnailSize: { width: 0, height: 0 } }).catch(() => []);
-    return sources.length > 0 ? sources[0].id : null;
-  }
-
-  private scheduleRestart() {
-    if (this.restartTimer || this.quitting) return;
-    this.restartTimer = setTimeout(() => {
-      this.restartTimer = null;
-      void this.reconcile();
-    }, RESTART_DELAY_MS);
-  }
-
-  private clearRestartTimer() {
-    if (this.restartTimer) clearTimeout(this.restartTimer);
-    this.restartTimer = null;
+    if (win && !win.isDestroyed()) win.destroy();
   }
 
   // ---------------------------------------------------------------------------
-  // Pausing: lock / sleep / working hours
+  // Pausing: lock / sleep / working hours / daily cap
   // ---------------------------------------------------------------------------
 
   private registerSystemEvents() {
@@ -306,10 +384,8 @@ export class ScreenRecorder {
       void this.stop();
     };
     const resume = (reason: PauseReason) => {
-      if (!this.paused.delete(reason)) return;
-      void this.reconcile();
+      if (this.paused.delete(reason)) this.reconcile();
     };
-
     powerMonitor.on("lock-screen", () => pause("locked"));
     powerMonitor.on("unlock-screen", () => resume("locked"));
     powerMonitor.on("suspend", () => pause("suspended"));
@@ -323,44 +399,106 @@ export class ScreenRecorder {
     } else if (!bounded && this.hoursTimer) {
       clearInterval(this.hoursTimer);
       this.hoursTimer = null;
-      this.paused.delete("off-hours");
+      if (this.paused.delete("off-hours")) this.reconcile();
     }
   }
 
   private updateOffHours() {
     const off = !withinWorkingHours(this.policy);
-    const was = this.paused.has("off-hours");
-    if (off === was) return;
+    if (off === this.paused.has("off-hours")) return;
     if (off) {
       this.paused.add("off-hours");
       void this.stop();
-    } else {
-      this.paused.delete("off-hours");
-      void this.reconcile();
+    } else if (this.paused.delete("off-hours")) {
+      this.reconcile();
     }
   }
 
   // ---------------------------------------------------------------------------
-  // Chunk intake + upload queue
+  // Daily recording cap
   // ---------------------------------------------------------------------------
+
+  private get capSeconds(): number {
+    return this.policy.recordingDailyCapMinutes > 0 ? this.policy.recordingDailyCapMinutes * 60 : 0;
+  }
+
+  private rollDayIfNeeded() {
+    const today = dayKey();
+    if (today !== this.capDay) {
+      this.capDay = today;
+      this.recordedSecondsToday = 0;
+    }
+  }
+
+  private capReached(): boolean {
+    this.rollDayIfNeeded();
+    const cap = this.capSeconds;
+    return cap > 0 && this.recordedSecondsToday >= cap;
+  }
+
+  /** Shorten the final chunk so we don't overshoot the daily cap. */
+  private chunkSecondsRespectingCap(): number {
+    const full = this.policy.recordingChunkSeconds;
+    const cap = this.capSeconds;
+    if (cap === 0) return full;
+    const remaining = cap - this.recordedSecondsToday;
+    return remaining > 0 ? Math.min(full, remaining) : full;
+  }
+
+  private addRecordedSeconds(seconds: number) {
+    this.rollDayIfNeeded();
+    this.recordedSecondsToday += seconds;
+  }
+
+  private updateDailyCap() {
+    // If the cap was raised or removed while paused for it, lift the pause.
+    if (this.paused.has("daily-cap") && !this.capReached()) {
+      this.paused.delete("daily-cap");
+      if (this.capTimer) clearTimeout(this.capTimer);
+      this.capTimer = null;
+      this.reconcile();
+    }
+  }
+
+  private enterDailyCapPause() {
+    this.paused.add("daily-cap");
+    void this.stop();
+    if (this.capTimer) clearTimeout(this.capTimer);
+    // Resume at the next local midnight when the budget resets.
+    const now = new Date();
+    const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 5);
+    this.capTimer = setTimeout(() => {
+      this.capTimer = null;
+      this.rollDayIfNeeded();
+      if (this.paused.delete("daily-cap")) this.reconcile();
+    }, Math.max(1000, midnight.getTime() - now.getTime()));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Retry / upload queue
+  // ---------------------------------------------------------------------------
+
+  private scheduleRetry() {
+    if (this.retryTimer || this.quitting) return;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      this.reconcile();
+    }, RETRY_DELAY_MS);
+  }
+
+  private clearRetryTimer() {
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+  }
 
   private registerIpc() {
     ipcMain.removeHandler("recorder:chunk");
-    ipcMain.handle("recorder:chunk", (_e, payload: ChunkPayload) => {
-      // Keep chunks even from a session we've already torn down (the final
-      // partial chunk arrives just after we ask the renderer to stop).
-      if (payload.buffer && payload.buffer.byteLength > 0) {
-        this.enqueue({
-          bytes: Buffer.from(payload.buffer),
-          durationSeconds: payload.durationSeconds,
-          attempts: 0,
-        });
+    ipcMain.handle("recorder:chunk", (_e, result: ChunkResult) => {
+      // Resolve the waiting chunk request, even from a session we've already
+      // torn down (the final partial chunk arrives just after we end it).
+      if (this.pending && this.pending.seq === result.seq) {
+        this.pending.resolve(result);
       }
-    });
-
-    ipcMain.removeHandler("recorder:stopped");
-    ipcMain.handle("recorder:stopped", (_e, payload: { session: number }) => {
-      if (payload?.session === this.session) this.stoppedSignal?.();
     });
   }
 

@@ -2,24 +2,21 @@ import { contextBridge, ipcRenderer } from "electron";
 
 /**
  * Minimal, locked-down bridge for the hidden capture renderer. It can only
- * receive begin/stop commands and send finished chunks (and a "stopped" signal)
- * back to the main process — nothing else.
+ * receive begin-chunk / end-chunk commands and deliver a finished chunk back to
+ * the main process — nothing else.
  */
-export interface CaptureBeginOptions {
+export interface ChunkRequest {
   session: number;
+  seq: number;
   sourceId: string;
-  chunkSeconds: number;
   fps: number;
-  maxWidth: number;
-  maxHeight: number;
-  videoBitsPerSecond: number;
+  bitsPerSecond: number;
 }
 
 contextBridge.exposeInMainWorld("capture", {
-  onBegin: (cb: (opts: CaptureBeginOptions) => void) =>
-    ipcRenderer.on("recorder:begin", (_e, opts) => cb(opts)),
-  onStop: (cb: () => void) => ipcRenderer.on("recorder:stop", () => cb()),
-  sendChunk: (session: number, buffer: ArrayBuffer, startedAt: string, durationSeconds: number) =>
-    ipcRenderer.invoke("recorder:chunk", { session, buffer, startedAt, durationSeconds }),
-  reportStopped: (session: number) => ipcRenderer.invoke("recorder:stopped", { session }),
+  onBeginChunk: (cb: (req: ChunkRequest) => void) =>
+    ipcRenderer.on("recorder:begin-chunk", (_e, req) => cb(req)),
+  onEndChunk: (cb: () => void) => ipcRenderer.on("recorder:end-chunk", () => cb()),
+  deliverChunk: (session: number, seq: number, buffer: ArrayBuffer, durationSeconds: number) =>
+    ipcRenderer.invoke("recorder:chunk", { session, seq, buffer, durationSeconds }),
 });
