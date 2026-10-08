@@ -9,31 +9,16 @@ import { uploadMedia } from "./uploader";
  * Periodic screenshots driven by tenant policy.
  *
  * - Interval is in seconds (`screenshotIntervalSeconds`).
- * - Scope defaults to the ACTIVE window only; tenants can opt into the full
- *   display the active window is on.
- * - Optional blur, an excluded-apps list (nothing is captured while one of
- *   those apps is in the foreground) and a per-day cap.
+ * - `activeWindowOnly` (default true) crops to the foreground window; when
+ *   false the whole display the active window is on is captured.
+ * - Optional blur, `excludedApps` (nothing is captured while one of
+ *   those apps is in the foreground) and `screenshotDailyCap`
+ *   (count per local day, 0 = no cap).
  * - Skips while idle, outside working hours or when monitoring is off.
  *
  * Captures go to the shared uploader. Cross-platform: active window comes from
  * active-win, pixels from Electron's desktopCapturer.
  */
-
-export type ScreenshotScope = "ACTIVE_WINDOW" | "FULL_SCREEN";
-
-/**
- * Screenshot policy fields not yet in the shared `devicePolicySchema`. They are
- * read defensively so this module works today with defaults and picks them up
- * as soon as the shared contract ships them.
- */
-interface ScreenshotPolicyExt {
-  screenshotScope?: ScreenshotScope;
-  screenshotExcludedApps?: string[];
-  // Max screenshots per local calendar day. 0 or missing = no cap.
-  screenshotDailyCap?: number;
-}
-
-type ScreenshotPolicy = DevicePolicy & ScreenshotPolicyExt;
 
 interface QuotaState {
   day: string;
@@ -56,7 +41,7 @@ export class Screenshotter {
   private capturing = false;
   private warnedPermission = false;
 
-  constructor(private policy: ScreenshotPolicy) {}
+  constructor(private policy: DevicePolicy) {}
 
   updatePolicy(policy: DevicePolicy) {
     const prev = this.policy;
@@ -117,23 +102,21 @@ export class Screenshotter {
     if (powerMonitor.getSystemIdleTime() >= p.idleThresholdSeconds) return;
     if (!this.hasScreenPermission()) return;
 
-    const cap = p.screenshotDailyCap ?? 0;
-    if (cap > 0 && quotaUsedToday() >= cap) return;
+    if (p.screenshotDailyCap > 0 && quotaUsedToday() >= p.screenshotDailyCap) return;
 
     const win = await activeWin().catch(() => undefined);
-    if (win && isExcluded(win, p.screenshotExcludedApps ?? [])) return;
+    if (win && isExcluded(win, p.excludedApps)) return;
 
-    const scope: ScreenshotScope = p.screenshotScope ?? "ACTIVE_WINDOW";
     const windowRect = win ? toDipRect(win.bounds) : undefined;
     // In active-window mode we need to know which window that is; without it we
     // would fall back to a full screen grab the tenant did not ask for.
-    if (scope === "ACTIVE_WINDOW" && !windowRect) return;
+    if (p.activeWindowOnly && !windowRect) return;
 
     const display = windowRect ? screen.getDisplayMatching(windowRect) : screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
     let image = await grabDisplay(display);
     if (!image || image.isEmpty()) return;
 
-    if (scope === "ACTIVE_WINDOW" && windowRect) {
+    if (p.activeWindowOnly && windowRect) {
       const crop = cropRect(windowRect, display, image);
       if (!crop) return;
       image = image.crop(crop);
