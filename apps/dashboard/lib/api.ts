@@ -119,6 +119,30 @@ export interface AppSummary {
   activeSeconds: number;
 }
 
+export interface SiteSummary {
+  site: string;
+  activeSeconds: number;
+  category?: string | null;
+}
+
+export interface DailyActivity {
+  day: string;
+  userId: string | null;
+  activeSeconds: number;
+  idleSeconds: number;
+}
+
+export interface ActivityLogRow {
+  capturedAt: string;
+  userId: string | null;
+  deviceId: string | null;
+  type: "APP_ACTIVE" | "IDLE_START" | "IDLE_END" | "SESSION_START" | "SESSION_END";
+  appName: string | null;
+  windowTitle: string | null;
+  url: string | null;
+  activeSeconds: number | null;
+}
+
 export interface MediaItem {
   id: string;
   kind: "SCREENSHOT" | "RECORDING";
@@ -331,6 +355,8 @@ export interface RequestOptions extends Omit<RequestInit, "body"> {
   tenantId?: string | null;
   /** Skip the Authorization header (e.g. login). */
   anonymous?: boolean;
+  /** Return the raw body as a Blob (CSV exports, downloads) instead of JSON. */
+  as?: "json" | "blob";
 }
 
 /** Called once when any request comes back 401; pages redirect to /login. */
@@ -347,6 +373,21 @@ function buildUrl(path: string, query?: Query) {
     }
   }
   return url.toString();
+}
+
+/**
+ * Authorization + X-Tenant-Id headers for the current session, for the rare
+ * call that cannot go through `request` (e.g. a raw `fetch` or an EventSource
+ * polyfill). Prefer `http.*`, which also refreshes expired tokens.
+ */
+export function authHeaders(tenantId?: string | null): Headers {
+  const h = new Headers();
+  const s = getSession();
+  if (!s) return h;
+  h.set("Authorization", `Bearer ${s.token}`);
+  const tid = tenantId === undefined ? s.activeTenantId : tenantId;
+  if (tid) h.set(TENANT_HEADER, tid);
+  return h;
 }
 
 let refreshing: Promise<boolean> | null = null;
@@ -398,17 +439,13 @@ export async function request<T = unknown>(path: string, opts: RequestOptions = 
 }
 
 async function send<T>(path: string, opts: RequestOptions, mayRefresh: boolean): Promise<T> {
-  const { json, query, tenantId, anonymous, headers, ...init } = opts;
+  const { json, query, tenantId, anonymous, headers, as, ...init } = opts;
   const session = anonymous ? null : getSession();
 
   const h = new Headers(headers);
   if (json !== undefined && !h.has("Content-Type")) h.set("Content-Type", "application/json");
-  h.set("Accept", "application/json");
-  if (session) {
-    h.set("Authorization", `Bearer ${session.token}`);
-    const tid = tenantId === undefined ? session.activeTenantId : tenantId;
-    if (tid) h.set(TENANT_HEADER, tid);
-  }
+  if (as !== "blob") h.set("Accept", "application/json");
+  if (session) authHeaders(tenantId).forEach((v, k) => h.set(k, v));
 
   let res: Response;
   try {
@@ -420,6 +457,8 @@ async function send<T>(path: string, opts: RequestOptions, mayRefresh: boolean):
   } catch (e) {
     throw new ApiError(0, errorMessage(0, null), e);
   }
+
+  if (res.ok && as === "blob") return (await res.blob()) as T;
 
   const text = await res.text();
   let body: unknown = null;
@@ -514,9 +553,26 @@ export const usersApi = {
 export const reportsApi = {
   devices: () => http.get<DeviceRow[]>("/api/reports/devices"),
   activitySummary: (query?: Query) => http.get<AppSummary[]>("/api/reports/activity/summary", { query }),
-  activity: (query?: Query) => http.get<unknown[]>("/api/reports/activity", { query }),
+  sitesSummary: (query?: Query) => http.get<SiteSummary[]>("/api/reports/sites/summary", { query }),
+  activityDaily: (query?: Query) => http.get<DailyActivity[]>("/api/reports/activity/daily", { query }),
+  activity: (query?: Query) => http.get<ActivityLogRow[]>("/api/reports/activity", { query }),
   media: (query?: Query) => http.get<MediaItem[]>("/api/reports/media", { query }),
+  /** Any report as CSV (`format=csv`), e.g. `reportsApi.csv("timesheet", { from, to })`. */
+  csv: (report: string, query?: Query) =>
+    http.get<Blob>(`/api/reports/${report}`, { query: { ...query, format: "csv" }, as: "blob" }),
 };
+
+/** Save a Blob (e.g. a CSV export) as a file in the browser. */
+export function saveBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
 
 // ---------------------------------------------------------------------------
 // Session lifecycle
