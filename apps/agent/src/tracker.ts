@@ -24,9 +24,6 @@ import { apiClient } from "./api";
 
 type ActivityType = ActivityEvent["type"];
 
-/** Optional policy fields that may not be in the shared contract yet. */
-type TrackerPolicy = DevicePolicy & { excludedApps?: string[] };
-
 const FLUSH_INTERVAL_MS = 30_000;
 /** Server accepts at most 500 events per batch (activityBatchSchema). */
 const MAX_BATCH = 500;
@@ -128,7 +125,7 @@ export class ActivityTracker {
   private readonly onAway = () => this.setAway(true);
   private readonly onBack = () => this.setAway(false);
 
-  constructor(private policy: TrackerPolicy) {}
+  constructor(private policy: DevicePolicy) {}
 
   updatePolicy(policy: DevicePolicy) {
     this.policy = policy;
@@ -216,7 +213,7 @@ export class ActivityTracker {
       return;
     }
     if (!fg) return;
-    if (isExcludedApp(fg, this.policy.excludedApps ?? [])) return;
+    if (isExcludedApp(fg, this.policy.excludedApps)) return;
 
     this.push("APP_ACTIVE", {
       appName: fg.appName,
