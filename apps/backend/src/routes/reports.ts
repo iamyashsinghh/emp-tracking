@@ -583,6 +583,21 @@ reportsRouter.get(
   })
 );
 
+/** Totals per (user, local day), only for cells that had any activity. */
+async function perUserDay(f: Filters) {
+  const [usage, idle] = await Promise.all([loadUsage(f), loadIdle(f)]);
+  const cells = new Map<string, { userId: string | null; day: string; t: Totals }>();
+  const get = (userId: string | null, day: string) => {
+    const k = `${userId ?? ""}|${day}`;
+    const c = cells.get(k) ?? { userId, day, t: emptyTotals() };
+    cells.set(k, c);
+    return c.t;
+  };
+  for (const r of usage) addUsage(get(r.userId, r.day), r);
+  for (const r of idle) get(r.userId, r.day).idleSeconds += r.seconds;
+  return [...cells.values()];
+}
+
 // Per-employee, per-day active/idle rows. Mostly useful as a CSV export.
 reportsRouter.get(
   "/timesheet",
@@ -590,19 +605,10 @@ reportsRouter.get(
   handle(async (req, res) => {
     const f = filters(req, res);
     if (!f) return;
-    const [usage, idle] = await Promise.all([loadUsage(f), loadIdle(f)]);
-    const cells = new Map<string, { userId: string | null; day: string; t: Totals }>();
-    const get = (userId: string | null, day: string) => {
-      const k = `${userId ?? ""}|${day}`;
-      const c = cells.get(k) ?? { userId, day, t: emptyTotals() };
-      cells.set(k, c);
-      return c.t;
-    };
-    for (const r of usage) addUsage(get(r.userId, r.day), r);
-    for (const r of idle) get(r.userId, r.day).idleSeconds += r.seconds;
-    const users = await loadUsers(f, [...cells.values()].map((c) => c.userId));
+    const cells = await perUserDay(f);
+    const users = await loadUsers(f, cells.map((c) => c.userId));
 
-    const rows = [...cells.values()]
+    const rows = cells
       .map((c) => ({
         day: c.day,
         userId: c.userId,
@@ -673,6 +679,25 @@ reportsRouter.get(
       category,
     }));
     send(res, f, "sites_summary", rows, () => rows);
+  })
+);
+
+// Daily active/idle seconds per employee as a bare array, for the dashboard.
+reportsRouter.get(
+  "/activity/daily",
+  requireUser(...everyone),
+  handle(async (req, res) => {
+    const f = filters(req, res);
+    if (!f) return;
+    const rows = (await perUserDay(f))
+      .map((c) => ({
+        day: c.day,
+        userId: c.userId,
+        activeSeconds: c.t.activeSeconds,
+        idleSeconds: c.t.idleSeconds,
+      }))
+      .sort((a, b) => a.day.localeCompare(b.day) || (a.userId ?? "").localeCompare(b.userId ?? ""));
+    send(res, f, "activity_daily", rows, () => rows);
   })
 );
 
