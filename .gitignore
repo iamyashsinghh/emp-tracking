@@ -13,3 +13,4 @@ agent-data/
 uploads-local/
 release/
 *.tsbuildinfo
+reports/
