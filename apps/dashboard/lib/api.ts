@@ -7,7 +7,10 @@
  *  1. Session storage (JWT + signed-in user), persisted in localStorage.
  *  2. Active tenant (company) context, so the owner can switch between
  *     companies without signing out. Sent to the backend as `X-Tenant-Id`.
- *  3. Typed fetch helpers + typed endpoint wrappers (`authApi`, `tenantsApi`, …).
+ *  3. Token refresh: a 401 triggers one POST /api/auth/refresh (rotating,
+ *     single-use refresh token) and the request is retried; only a failed
+ *     refresh signs the user out.
+ *  4. Typed fetch helpers + typed endpoint wrappers (`authApi`, `tenantsApi`, …).
  *
  * Pages should import from here rather than calling `fetch` directly.
  */
@@ -40,11 +43,16 @@ export interface TenantSummary {
   name: string;
   slug: string;
   createdAt?: string;
+  /** True for the signed-in user's own company (from GET /api/auth/tenants). */
+  home?: boolean;
   _count?: { users: number; devices: number };
 }
 
 export interface Session {
+  /** Short-lived access token (JWT). */
   token: string;
+  /** Single-use refresh token; rotated on every refresh. */
+  refreshToken?: string;
   user: SessionUser;
   /** Company currently being viewed. Defaults to the user's home tenant. */
   activeTenantId: string;
@@ -53,8 +61,20 @@ export interface Session {
 }
 
 export interface LoginResponse {
+  /** Legacy alias of accessToken. */
   token: string;
+  accessToken?: string;
+  refreshToken?: string;
+  tokenType?: "Bearer";
+  /** Access token lifetime in seconds. */
+  expiresIn?: number;
   user: SessionUser;
+}
+
+/** GET /api/auth/me — `tenant` is the home company, `activeTenant` what X-Tenant-Id selected. */
+export interface MeResponse extends SessionUser {
+  tenant?: TenantSummary;
+  activeTenant?: TenantSummary | null;
 }
 
 export interface TenantPolicy {
@@ -127,6 +147,10 @@ export class ApiError extends Error {
   get isForbidden() {
     return this.status === 403;
   }
+  /** Login only: the email exists in several companies; retry with a tenantSlug. */
+  get needsCompany() {
+    return this.status === 409;
+  }
 }
 
 function errorMessage(status: number, body: unknown): string {
@@ -172,7 +196,8 @@ function readStorage(): Session | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Session;
     if (!parsed?.token || !parsed.user?.id) return null;
-    if (isExpired(parsed.token)) return null;
+    // An expired access token is fine while we still hold a refresh token.
+    if (isExpired(parsed.token) && !parsed.refreshToken) return null;
     return { ...parsed, tenants: parsed.tenants ?? [] };
   } catch {
     return null;
@@ -244,7 +269,7 @@ export function getToken(): string | null {
   return getSession()?.token ?? null;
 }
 export function clearToken() {
-  setSession(null);
+  logout();
 }
 export const clearSession = clearToken;
 
@@ -324,7 +349,55 @@ function buildUrl(path: string, query?: Query) {
   return url.toString();
 }
 
+let refreshing: Promise<boolean> | null = null;
+
+/**
+ * Exchange the refresh token for a new pair. Concurrent 401s share one call,
+ * since the refresh token is single-use. Another tab may already have rotated
+ * it, so storage is re-read before and after.
+ */
+function refreshTokens(staleToken: string): Promise<boolean> {
+  if (!refreshing) {
+    refreshing = (async () => {
+      cached = readStorage();
+      const s = cached;
+      if (!s) return false;
+      if (s.token !== staleToken) return true; // another tab already refreshed
+      if (!s.refreshToken) return false;
+      try {
+        const res = await request<LoginResponse>("/api/auth/refresh", {
+          method: "POST",
+          json: { refreshToken: s.refreshToken },
+          anonymous: true,
+        });
+        const cur = getSession() ?? s;
+        setSession({
+          ...cur,
+          token: res.accessToken ?? res.token,
+          refreshToken: res.refreshToken ?? cur.refreshToken,
+          user: res.user ?? cur.user,
+        });
+        return true;
+      } catch {
+        const latest = readStorage();
+        if (latest && latest.token !== staleToken) {
+          cached = latest;
+          return true;
+        }
+        return false;
+      }
+    })().finally(() => {
+      refreshing = null;
+    });
+  }
+  return refreshing;
+}
+
 export async function request<T = unknown>(path: string, opts: RequestOptions = {}): Promise<T> {
+  return send<T>(path, opts, true);
+}
+
+async function send<T>(path: string, opts: RequestOptions, mayRefresh: boolean): Promise<T> {
   const { json, query, tenantId, anonymous, headers, ...init } = opts;
   const session = anonymous ? null : getSession();
 
@@ -360,8 +433,20 @@ export async function request<T = unknown>(path: string, opts: RequestOptions = 
 
   if (!res.ok) {
     if (res.status === 401 && session) {
+      if (mayRefresh && (await refreshTokens(session.token))) return send<T>(path, opts, false);
       setSession(null);
       onUnauthorized?.();
+    }
+    // The saved company was deleted or is no longer ours: fall back to home.
+    const sentTenant = session && (tenantId === undefined ? session.activeTenantId : tenantId);
+    if (
+      session &&
+      tenantId === undefined &&
+      sentTenant !== session.user.tenantId &&
+      ((res.status === 404 && errorMessage(res.status, body) === "Company not found") ||
+        (res.status === 403 && errorMessage(res.status, body) === "No access to that company"))
+    ) {
+      updateSession({ activeTenantId: session.user.tenantId });
     }
     throw new ApiError(res.status, errorMessage(res.status, body), body);
   }
@@ -395,9 +480,17 @@ export async function api<T = unknown>(path: string, init: RequestInit = {}): Pr
 // ---------------------------------------------------------------------------
 
 export const authApi = {
-  login: (email: string, password: string) =>
-    http.post<LoginResponse>("/api/auth/login", { email, password }, { anonymous: true }),
-  me: () => http.get<SessionUser>("/api/auth/me"),
+  login: (email: string, password: string, tenantSlug?: string) =>
+    http.post<LoginResponse>(
+      "/api/auth/login",
+      { email, password, ...(tenantSlug ? { tenantSlug } : {}) },
+      { anonymous: true }
+    ),
+  me: () => http.get<MeResponse>("/api/auth/me"),
+  /** Companies the caller may switch to (all for the owner, else their own). */
+  tenants: () => http.get<TenantSummary[]>("/api/auth/tenants"),
+  logout: (refreshToken: string) =>
+    http.post<void>("/api/auth/logout", { refreshToken }, { anonymous: true }),
 };
 
 export const tenantsApi = {
@@ -429,16 +522,23 @@ export const reportsApi = {
 // Session lifecycle
 // ---------------------------------------------------------------------------
 
-/** Fetch the companies this user can see. Non-super-admins only see their own. */
+/** Fetch the companies this user can switch to. */
 async function loadTenants(user: SessionUser): Promise<TenantSummary[]> {
-  if (user.role === "SUPER_ADMIN") {
-    try {
-      return await tenantsApi.list();
-    } catch {
-      // fall through to the home tenant only
+  try {
+    const list = await authApi.tenants();
+    if (list.length) return list;
+  } catch (e) {
+    // Older backends lack /api/auth/tenants; fall back below.
+    if (!(e instanceof ApiError) || e.status !== 404) throw e;
+    if (user.role === "SUPER_ADMIN") {
+      try {
+        return await tenantsApi.list();
+      } catch {
+        /* fall through */
+      }
     }
   }
-  return [{ id: user.tenantId, name: "My company", slug: "" }];
+  return [{ id: user.tenantId, name: "My company", slug: "", home: true }];
 }
 
 /** Pick the company to show after sign-in: last used (if still allowed), else home. */
@@ -471,14 +571,21 @@ subscribeSession(() => {
   if (s) rememberTenant(s.user.id, s.activeTenantId);
 });
 
-/** Sign in, then load the company list and restore the last active company. */
-export async function login(email: string, password: string): Promise<Session> {
-  const { token, user } = await authApi.login(email, password);
+/**
+ * Sign in, then load the company list and restore the last active company.
+ * Throws an ApiError with `needsCompany` when the email exists in several
+ * companies; call again with that company's slug.
+ */
+export async function login(email: string, password: string, tenantSlug?: string): Promise<Session> {
+  const res = await authApi.login(email, password, tenantSlug);
+  const token = res.accessToken ?? res.token;
+  const { refreshToken, user } = res;
   // Seed a session so the tenants call is authenticated.
-  setSession({ token, user, activeTenantId: user.tenantId, tenants: [] });
+  setSession({ token, refreshToken, user, activeTenantId: user.tenantId, tenants: [] });
   const tenants = await loadTenants(user);
   const session: Session = {
     token,
+    refreshToken,
     user,
     tenants,
     activeTenantId: pickTenant(user, tenants, lastTenant(user.id)),
@@ -491,10 +598,10 @@ export async function login(email: string, password: string): Promise<Session> {
 export async function refreshSession(): Promise<Session | null> {
   const s = getSession();
   if (!s) return null;
-  const user = await authApi.me();
+  const { tenant: _home, activeTenant: _active, ...user } = await authApi.me();
   const tenants = await loadTenants(user);
   const next: Session = {
-    ...s,
+    ...(getSession() ?? s), // token may have been refreshed by the calls above
     user,
     tenants,
     activeTenantId: pickTenant(user, tenants, s.activeTenantId),
@@ -503,6 +610,9 @@ export async function refreshSession(): Promise<Session | null> {
   return next;
 }
 
+/** Sign out locally and revoke the refresh token server-side (best effort). */
 export function logout() {
+  const rt = getSession()?.refreshToken;
   setSession(null);
+  if (rt) authApi.logout(rt).catch(() => {});
 }

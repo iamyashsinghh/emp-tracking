@@ -27,6 +27,9 @@ export default function LoginPage() {
   const [session, setSessionState] = useState<Session | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  // Shown only when the email exists in more than one company.
+  const [needsCompany, setNeedsCompany] = useState(false);
+  const [tenantSlug, setTenantSlug] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -60,7 +63,7 @@ export default function LoginPage() {
     setBusy(true);
     setError(null);
     try {
-      const s = await login(email.trim(), password);
+      const s = await login(email.trim(), password, needsCompany ? tenantSlug.trim() : undefined);
       if (canSwitchTenant(s)) {
         setSessionState(s);
         setStep("company");
@@ -68,7 +71,14 @@ export default function LoginPage() {
         router.replace(nextPath());
       }
     } catch (err) {
-      setError(err instanceof ApiError && err.isUnauthorized ? "Invalid email or password" : (err as Error).message);
+      if (err instanceof ApiError && err.needsCompany) {
+        setNeedsCompany(true);
+        setError("This email is used in more than one company. Enter the company ID to continue.");
+      } else if (err instanceof ApiError && err.isUnauthorized) {
+        setError(needsCompany ? "Invalid email, password or company" : "Invalid email or password");
+      } else {
+        setError((err as Error).message);
+      }
     } finally {
       setBusy(false);
     }
@@ -122,12 +132,31 @@ export default function LoginPage() {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
           />
+          {needsCompany && (
+            <>
+              <label style={labelStyle} htmlFor="tenantSlug">
+                Company ID
+              </label>
+              <input
+                id="tenantSlug"
+                style={inputStyle}
+                autoComplete="organization"
+                autoCapitalize="none"
+                placeholder="e.g. acme"
+                autoFocus
+                required
+                value={tenantSlug}
+                onChange={(e) => setTenantSlug(e.target.value.toLowerCase())}
+              />
+            </>
+          )}
           {error && (
             <p role="alert" style={{ color: "#f87171", fontSize: 13, marginBottom: 0 }}>
               {error}
             </p>
           )}
-          <button type="submit" disabled={busy || !email || !password} style={btnStyle(busy || !email || !password)}>
+          <button type="submit" disabled={busy || !email || !password || (needsCompany && !tenantSlug)}
+            style={btnStyle(busy || !email || !password || (needsCompany && !tenantSlug))}>
             {busy ? "Signing in…" : "Sign in"}
           </button>
         </form>
