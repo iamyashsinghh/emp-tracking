@@ -7,47 +7,102 @@
   <body>
     <script>
       // Hidden renderer: records the desktop stream in rotating chunks and
-      // ships each finished chunk to the main process for upload.
-      let recorder = null;
+      // ships each finished chunk to the main process for upload. The recorder
+      // is restarted on each rotation so every chunk is a standalone, playable
+      // WebM file rather than a fragment of one long stream.
       let stream = null;
+      let recorder = null;
+      let session = 0;
+      let active = false;
+      let rotateTimer = null;
 
-      async function begin({ sourceId, chunkSeconds, fps }) {
+      function pickMimeType() {
+        const candidates = [
+          "video/webm;codecs=vp9",
+          "video/webm;codecs=vp8",
+          "video/webm",
+        ];
+        for (const type of candidates) {
+          if (window.MediaRecorder && MediaRecorder.isTypeSupported(type)) return type;
+        }
+        return "video/webm";
+      }
+
+      async function begin(opts) {
+        session = opts.session;
+        active = true;
         try {
           stream = await navigator.mediaDevices.getUserMedia({
             audio: false,
             video: {
               mandatory: {
                 chromeMediaSource: "desktop",
-                chromeMediaSourceId: sourceId,
-                maxFrameRate: fps,
+                chromeMediaSourceId: opts.sourceId,
+                maxFrameRate: opts.fps,
+                maxWidth: opts.maxWidth,
+                maxHeight: opts.maxHeight,
               },
             },
           });
         } catch (e) {
           console.error("capture getUserMedia failed", e);
+          active = false;
+          window.capture.reportStopped(session);
           return;
         }
 
-        const startChunk = () => {
+        const mimeType = pickMimeType();
+
+        const recordChunk = () => {
+          if (!active || !stream) return;
           const chunks = [];
+          const startedAt = new Date().toISOString();
           const started = Date.now();
-          recorder = new MediaRecorder(stream, { mimeType: "video/webm;codecs=vp8" });
-          recorder.ondataavailable = (ev) => ev.data.size > 0 && chunks.push(ev.data);
+          let options = { mimeType, videoBitsPerSecond: opts.videoBitsPerSecond };
+          try {
+            recorder = new MediaRecorder(stream, options);
+          } catch (e) {
+            // Fall back to the default encoder if the bitrate/codec combo is rejected.
+            recorder = new MediaRecorder(stream);
+          }
+          recorder.ondataavailable = (ev) => ev.data && ev.data.size > 0 && chunks.push(ev.data);
           recorder.onstop = async () => {
             const blob = new Blob(chunks, { type: "video/webm" });
-            const buf = await blob.arrayBuffer();
-            const duration = Math.round((Date.now() - started) / 1000);
-            await window.capture.sendChunk(buf, duration);
-            if (stream) startChunk(); // rotate to the next chunk
+            if (blob.size > 0) {
+              const buf = await blob.arrayBuffer();
+              const duration = Math.round((Date.now() - started) / 1000);
+              try {
+                await window.capture.sendChunk(session, buf, startedAt, duration);
+              } catch (e) {
+                console.error("capture sendChunk failed", e);
+              }
+            }
+            if (active && stream) {
+              recordChunk(); // rotate to the next standalone chunk
+            } else {
+              window.capture.reportStopped(session);
+            }
           };
           recorder.start();
-          setTimeout(() => recorder && recorder.state !== "inactive" && recorder.stop(), chunkSeconds * 1000);
+          rotateTimer = setTimeout(() => {
+            if (recorder && recorder.state !== "inactive") recorder.stop();
+          }, opts.chunkSeconds * 1000);
         };
-        startChunk();
+
+        recordChunk();
       }
 
       function stop() {
-        if (recorder && recorder.state !== "inactive") recorder.stop();
+        active = false;
+        if (rotateTimer) {
+          clearTimeout(rotateTimer);
+          rotateTimer = null;
+        }
+        if (recorder && recorder.state !== "inactive") {
+          recorder.stop(); // flushes the final partial chunk, then reports stopped
+        } else {
+          window.capture.reportStopped(session);
+        }
         if (stream) {
           stream.getTracks().forEach((t) => t.stop());
           stream = null;
