@@ -1,5 +1,5 @@
 import { NextFunction, Request, Response } from "express";
-import { createHash, randomUUID } from "crypto";
+import { createHash, randomBytes } from "crypto";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { Role } from "@emptrack/shared";
@@ -93,14 +93,13 @@ export const ACCESS_TOKEN_TTL = process.env.JWT_ACCESS_EXPIRES_IN ?? "15m";
 export const REFRESH_TOKEN_TTL = process.env.JWT_REFRESH_EXPIRES_IN ?? env.jwtExpiresIn;
 
 type AccessClaims = Omit<AuthUser, "homeTenantId"> & { kind: "access" };
-type RefreshClaims = { kind: "refresh"; userId: string; tenantId: string; jti: string; exp: number };
 
-/**
- * Refresh tokens are signed with a key derived from the user's current password
- * hash, so changing or resetting a password revokes every outstanding session.
- */
-function refreshKey(passwordHash: string): string {
-  return createHash("sha256").update(env.jwtSecret).update(":refresh:").update(passwordHash).digest("hex");
+/** Parses "15m" / "7d" / "3600" (seconds) style durations into milliseconds. */
+export function durationMs(v: string): number {
+  const m = /^(\d+)\s*([smhd]?)$/.exec(v.trim());
+  if (!m) throw new Error(`Bad duration: ${v}`);
+  const unit = { "": 1, s: 1, m: 60, h: 3600, d: 86400 }[m[2] as "" | "s" | "m" | "h" | "d"];
+  return parseInt(m[1], 10) * unit * 1000;
 }
 
 export function signUserToken(u: Omit<AuthUser, "homeTenantId">): string {
@@ -114,52 +113,80 @@ export function signUserToken(u: Omit<AuthUser, "homeTenantId">): string {
   return jwt.sign(claims, env.jwtSecret, { expiresIn: ACCESS_TOKEN_TTL } as jwt.SignOptions);
 }
 
-export function signRefreshToken(u: { id: string; tenantId: string; passwordHash: string }): string {
-  return jwt.sign({ kind: "refresh", userId: u.id, tenantId: u.tenantId }, refreshKey(u.passwordHash), {
-    expiresIn: REFRESH_TOKEN_TTL,
-    jwtid: randomUUID(),
-  } as jwt.SignOptions);
-}
+// ---------------------------------------------------------------------------
+// Refresh tokens (RefreshToken table)
+// ---------------------------------------------------------------------------
+//
+// Opaque random strings; only their SHA-256 is stored, so a database leak does
+// not hand out live sessions. Each one is single-use: refreshing marks it
+// revoked (revokedAt) and issues a new one. Logout, password changes and
+// deactivation delete rows instead, so a row with revokedAt set can only mean
+// a rotated token was presented again, i.e. it was copied. That signs the user
+// out everywhere (refresh-token reuse detection) without punishing a client
+// that simply holds a token from before a logout or password change.
 
-/** Reads userId out of a refresh token without trusting it, to find whose key to verify with. */
-export function peekRefreshToken(token: string): { userId: string; tenantId: string } | null {
-  const decoded = jwt.decode(token) as Partial<RefreshClaims> | null;
-  if (!decoded || decoded.kind !== "refresh" || !decoded.userId || !decoded.tenantId) return null;
-  return { userId: decoded.userId, tenantId: decoded.tenantId };
-}
+// Parsed once at startup so a malformed JWT_REFRESH_EXPIRES_IN fails fast.
+const REFRESH_TOKEN_TTL_MS = durationMs(REFRESH_TOKEN_TTL);
 
-export function verifyRefreshToken(token: string, passwordHash: string): RefreshClaims | null {
-  try {
-    const payload = jwt.verify(token, refreshKey(passwordHash)) as RefreshClaims;
-    if (payload.kind !== "refresh" || !payload.jti || revokedRefreshTokens.has(payload.jti)) return null;
-    return payload;
-  } catch {
-    return null;
-  }
+const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
+
+async function createRefreshToken(user: { id: string; tenantId: string }): Promise<string> {
+  // Housekeeping: drop this user's expired rows so the table doesn't grow forever.
+  await prisma.refreshToken.deleteMany({ where: { userId: user.id, expiresAt: { lt: new Date() } } });
+  const token = randomBytes(32).toString("base64url");
+  await prisma.refreshToken.create({
+    data: {
+      tenantId: user.tenantId,
+      userId: user.id,
+      tokenHash: hashToken(token),
+      expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
+    },
+  });
+  return token;
 }
 
 /**
- * Revoked refresh-token ids, kept until the token would have expired anyway.
- * In-process only: it does not survive a restart or span several instances.
- * Swap for a DB table once the schema has one.
+ * Redeems a refresh token: revokes it and returns its owner, or null if it is
+ * unknown, expired, revoked, or the user is gone/deactivated. The revoke is a
+ * conditional update, so two concurrent refreshes with the same token cannot
+ * both succeed.
  */
-const revokedRefreshTokens = new Map<string, number>();
-
-export function revokeRefreshToken(claims: { jti: string; exp: number }): void {
-  revokedRefreshTokens.set(claims.jti, claims.exp * 1000);
-  const now = Date.now();
-  for (const [jti, expiresAt] of revokedRefreshTokens) {
-    if (expiresAt <= now) revokedRefreshTokens.delete(jti);
+export async function consumeRefreshToken(token: string) {
+  const row = await prisma.refreshToken.findUnique({ where: { tokenHash: hashToken(token) } });
+  if (!row) return null;
+  if (row.revokedAt) {
+    await revokeAllRefreshTokens(row.userId);
+    return null;
   }
+  if (row.expiresAt <= new Date()) return null;
+
+  const { count } = await prisma.refreshToken.updateMany({
+    where: { id: row.id, revokedAt: null },
+    data: { revokedAt: new Date() },
+  });
+  if (count !== 1) return null;
+
+  const user = await prisma.user.findFirst({ where: { id: row.userId, tenantId: row.tenantId } });
+  return user && user.isActive ? user : null;
+}
+
+/** Revokes one refresh token (logout). Unknown tokens are a no-op. */
+export async function revokeRefreshToken(token: string): Promise<void> {
+  await prisma.refreshToken.deleteMany({ where: { tokenHash: hashToken(token) } });
+}
+
+/** Signs a user out everywhere: password change/reset, deactivation, token reuse. */
+export async function revokeAllRefreshTokens(userId: string): Promise<void> {
+  await prisma.refreshToken.deleteMany({ where: { userId } });
 }
 
 /** Access + refresh pair returned by login and refresh. `token` is kept for older clients. */
-export function issueSession(user: { id: string; tenantId: string; role: string; email: string; passwordHash: string }) {
+export async function issueSession(user: { id: string; tenantId: string; role: string; email: string }) {
   const accessToken = signUserToken({ userId: user.id, tenantId: user.tenantId, role: user.role, email: user.email });
   return {
     token: accessToken,
     accessToken,
-    refreshToken: signRefreshToken(user),
+    refreshToken: await createRefreshToken(user),
     tokenType: "Bearer" as const,
     expiresIn: ACCESS_TOKEN_TTL,
   };

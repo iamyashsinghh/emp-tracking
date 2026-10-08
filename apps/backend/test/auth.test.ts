@@ -74,6 +74,28 @@ const fakeUser = {
 };
 Object.defineProperty(prisma, "user", { value: fakeUser, configurable: true });
 Object.defineProperty(prisma, "$transaction", { value: (ps: Promise<unknown>[]) => Promise.all(ps), configurable: true });
+type RT = { id: string; tenantId: string; userId: string; tokenHash: string; expiresAt: Date; revokedAt: Date | null };
+let refreshTokens: RT[] = [];
+const rtMatches = (r: RT, where: any = {}) =>
+  Object.entries(where).every(([k, v]: [string, any]) =>
+    v && typeof v === "object" && "lt" in v ? (r as any)[k] < v.lt : (r as any)[k] === v);
+Object.defineProperty(prisma, "refreshToken", {
+  value: {
+    create: async (a: any) => { const r = { id: `rt${++seq}`, revokedAt: null, ...a.data }; refreshTokens.push(r); return r; },
+    findUnique: async (a: any) => refreshTokens.find((r) => r.tokenHash === a.where.tokenHash) ?? null,
+    updateMany: async (a: any) => {
+      const hit = refreshTokens.filter((r) => rtMatches(r, a.where));
+      hit.forEach((r) => Object.assign(r, a.data));
+      return { count: hit.length };
+    },
+    deleteMany: async (a: any) => {
+      const before = refreshTokens.length;
+      refreshTokens = refreshTokens.filter((r) => !rtMatches(r, a.where));
+      return { count: before - refreshTokens.length };
+    },
+  },
+  configurable: true,
+});
 Object.defineProperty(prisma, "tenant", {
   value: {
     findUnique: async (a: any) => tenants.find((t) => t.id === a.where.id) ?? null,
@@ -87,6 +109,7 @@ Object.defineProperty(prisma, "device", {
 
 const hash = bcrypt.hashSync("password123", 4);
 function seed() {
+  refreshTokens = [];
   const now = new Date();
   const mk = (id: string, tenantId: string, email: string, role: string): U =>
     ({ id, tenantId, email, name: id, passwordHash: hash, role, isActive: true, createdAt: now, updatedAt: now });
@@ -198,10 +221,44 @@ describe("tokens", () => {
     const r1 = await call("POST", "/api/auth/refresh", { refreshToken: s.refreshToken });
     assert.equal(r1.status, 200);
     assert.ok(r1.body.accessToken);
-    const r2 = await call("POST", "/api/auth/refresh", { refreshToken: s.refreshToken });
-    assert.equal(r2.status, 401);
-    const r3 = await call("POST", "/api/auth/refresh", { refreshToken: r1.body.refreshToken });
-    assert.equal(r3.status, 200);
+    const r2 = await call("POST", "/api/auth/refresh", { refreshToken: r1.body.refreshToken });
+    assert.equal(r2.status, 200);
+    assert.notEqual(r2.body.refreshToken, r1.body.refreshToken);
+  });
+  it("stores only a hash of the refresh token", async () => {
+    const s = await login("admin@acme.co");
+    assert.equal(refreshTokens.length, 1);
+    assert.notEqual(refreshTokens[0].tokenHash, s.refreshToken);
+    assert.ok(!JSON.stringify(refreshTokens).includes(s.refreshToken));
+  });
+  it("reusing a rotated refresh token revokes every session of that user", async () => {
+    const s = await login("admin@acme.co");
+    const other = await login("admin@acme.co");
+    const r1 = await call("POST", "/api/auth/refresh", { refreshToken: s.refreshToken });
+    assert.equal(r1.status, 200);
+    // Replay of the old token: treated as theft.
+    assert.equal((await call("POST", "/api/auth/refresh", { refreshToken: s.refreshToken })).status, 401);
+    assert.equal((await call("POST", "/api/auth/refresh", { refreshToken: r1.body.refreshToken })).status, 401);
+    assert.equal((await call("POST", "/api/auth/refresh", { refreshToken: other.refreshToken })).status, 401);
+  });
+  it("rejects an expired refresh token", async () => {
+    const s = await login("admin@acme.co");
+    refreshTokens[0].expiresAt = new Date(Date.now() - 1000);
+    assert.equal((await call("POST", "/api/auth/refresh", { refreshToken: s.refreshToken })).status, 401);
+  });
+  it("deactivating a user revokes their refresh tokens", async () => {
+    const emp = await login("emp@acme.co");
+    const admin = await login("admin@acme.co");
+    assert.equal((await call("DELETE", "/api/users/emp", undefined, admin.accessToken)).status, 204);
+    users.find((u) => u.id === "emp")!.isActive = true; // even if reactivated later
+    assert.equal((await call("POST", "/api/auth/refresh", { refreshToken: emp.refreshToken })).status, 401);
+  });
+  it("a stale token from before a logout does not sign out other sessions", async () => {
+    const a = await login("mgr@acme.co");
+    const b = await login("mgr@acme.co");
+    await call("POST", "/api/auth/logout", { refreshToken: a.refreshToken });
+    assert.equal((await call("POST", "/api/auth/refresh", { refreshToken: a.refreshToken })).status, 401);
+    assert.equal((await call("POST", "/api/auth/refresh", { refreshToken: b.refreshToken })).status, 200);
   });
   it("logout revokes the refresh token", async () => {
     const s = await login("admin@acme.co");

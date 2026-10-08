@@ -4,7 +4,14 @@ import { z } from "zod";
 import { Prisma } from "@prisma/client";
 import { Role } from "@emptrack/shared";
 import { prisma } from "../prisma";
-import { assignableRoles, hashPassword, outranks, requireRoleAtLeast, requireUser } from "../auth";
+import {
+  assignableRoles,
+  hashPassword,
+  outranks,
+  requireRoleAtLeast,
+  requireUser,
+  revokeAllRefreshTokens,
+} from "../auth";
 
 export const usersRouter = Router();
 
@@ -165,6 +172,7 @@ usersRouter.patch(
 
     try {
       const user = await prisma.user.update({ where: { id: target.id }, data: changes, select: userSelect });
+      if (changes.isActive === false) await revokeAllRefreshTokens(target.id);
       res.json(user);
     } catch (e) {
       if (isUniqueViolation(e)) return res.status(409).json({ error: "Email already exists in this company" });
@@ -173,8 +181,7 @@ usersRouter.patch(
   })
 );
 
-// Admin-initiated password reset. Rotates the user's refresh-token key, so all
-// of their existing sessions end.
+// Admin-initiated password reset. Ends all of the user's existing sessions.
 usersRouter.post(
   "/:userId/password",
   requireRoleAtLeast(Role.Admin),
@@ -193,6 +200,7 @@ usersRouter.post(
       where: { id: target.id },
       data: { passwordHash: await hashPassword(parsed.data.password) },
     });
+    await revokeAllRefreshTokens(target.id);
     res.status(204).end();
   })
 );
@@ -209,6 +217,7 @@ usersRouter.delete(
     if (!outranks(req.auth!.role, target.role)) return res.status(403).json({ error: "Insufficient role" });
 
     await prisma.user.update({ where: { id: target.id }, data: { isActive: false } });
+    await revokeAllRefreshTokens(target.id);
     res.status(204).end();
   })
 );

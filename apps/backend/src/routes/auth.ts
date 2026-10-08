@@ -5,12 +5,12 @@ import { prisma } from "../prisma";
 import {
   burnPasswordCheck,
   hashPassword,
+  consumeRefreshToken,
   issueSession,
-  peekRefreshToken,
   requireUser,
+  revokeAllRefreshTokens,
   revokeRefreshToken,
   verifyPassword,
-  verifyRefreshToken,
 } from "../auth";
 
 export const authRouter = Router();
@@ -62,7 +62,7 @@ authRouter.post("/login", async (req, res, next) => {
     }
 
     const user = matches[0];
-    res.json({ ...issueSession(user), user: publicUser(user) });
+    res.json({ ...(await issueSession(user)), user: publicUser(user) });
   } catch (e) {
     next(e);
   }
@@ -75,17 +75,9 @@ authRouter.post("/refresh", async (req, res, next) => {
     const parsed = refreshBodySchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
 
-    const hint = peekRefreshToken(parsed.data.refreshToken);
-    if (!hint) return res.status(401).json({ error: "Invalid refresh token" });
-
-    const user = await prisma.user.findFirst({ where: { id: hint.userId, tenantId: hint.tenantId } });
-    if (!user || !user.isActive) return res.status(401).json({ error: "Invalid refresh token" });
-
-    const claims = verifyRefreshToken(parsed.data.refreshToken, user.passwordHash);
-    if (!claims) return res.status(401).json({ error: "Invalid refresh token" });
-
-    revokeRefreshToken(claims);
-    res.json({ ...issueSession(user), user: publicUser(user) });
+    const user = await consumeRefreshToken(parsed.data.refreshToken);
+    if (!user) return res.status(401).json({ error: "Invalid refresh token" });
+    res.json({ ...(await issueSession(user)), user: publicUser(user) });
   } catch (e) {
     next(e);
   }
@@ -96,14 +88,7 @@ authRouter.post("/refresh", async (req, res, next) => {
 authRouter.post("/logout", async (req, res, next) => {
   try {
     const parsed = refreshBodySchema.safeParse(req.body);
-    if (parsed.success) {
-      const hint = peekRefreshToken(parsed.data.refreshToken);
-      const user = hint
-        ? await prisma.user.findFirst({ where: { id: hint.userId, tenantId: hint.tenantId } })
-        : null;
-      const claims = user ? verifyRefreshToken(parsed.data.refreshToken, user.passwordHash) : null;
-      if (claims) revokeRefreshToken(claims);
-    }
+    if (parsed.success) await revokeRefreshToken(parsed.data.refreshToken);
     res.status(204).end();
   } catch (e) {
     next(e);
@@ -143,8 +128,8 @@ authRouter.get("/tenants", requireUser(), async (req, res, next) => {
   }
 });
 
-// Changing the password rotates the refresh-token signing key, which signs out
-// every other session; the caller gets a fresh pair so they stay signed in here.
+// Changing the password signs out every session, then hands the caller a fresh
+// pair so they stay signed in here.
 authRouter.post("/change-password", requireUser(), async (req, res, next) => {
   try {
     const parsed = changePasswordSchema.safeParse(req.body);
@@ -160,7 +145,8 @@ authRouter.post("/change-password", requireUser(), async (req, res, next) => {
       where: { id: user.id },
       data: { passwordHash: await hashPassword(parsed.data.newPassword) },
     });
-    res.json({ ...issueSession(updated), user: publicUser(updated) });
+    await revokeAllRefreshTokens(user.id);
+    res.json({ ...(await issueSession(updated)), user: publicUser(updated) });
   } catch (e) {
     next(e);
   }
