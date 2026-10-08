@@ -28,6 +28,9 @@ services:
   backend:
     build: !reset null
     pull_policy: always
+    environment:
+      # Must be the public MinIO/S3 URL: agents upload to presigned URLs on this host.
+      S3_PUBLIC_URL: ${S3_PUBLIC_URL:?set S3_PUBLIC_URL to the externally reachable MinIO/S3 URL}
     ports: !override
       - "127.0.0.1:${BACKEND_PORT:-4000}:4000"
     logging: *logging

@@ -41,7 +41,9 @@ services:
       start_period: 10s
 
   minio:
-    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    # Upstream stopped publishing minio/minio images; pgsty/minio is a drop-in
+    # community build of the same server. Override with MINIO_IMAGE if needed.
+    image: ${MINIO_IMAGE:-pgsty/minio:RELEASE.2026-08-04T00-00-00Z}
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
