@@ -2,34 +2,60 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>Enroll device</title>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+    <title>Enroll device · EmpTrack</title>
     <style>
-      body { font-family: system-ui, sans-serif; background: #0b1220; color: #e6edf7; padding: 24px; }
-      h1 { font-size: 18px; }
+      body { font-family: system-ui, sans-serif; background: #0b1220; color: #e6edf7; padding: 24px; margin: 0; }
+      h1 { font-size: 18px; margin: 0 0 6px; }
+      .sub { font-size: 12px; color: #9ab; margin: 0; }
+      .notice { margin-top: 16px; padding: 10px 12px; background: #1a2540; border: 1px solid #2d3d63; border-radius: 6px; font-size: 12px; line-height: 1.5; color: #c9d6ea; }
+      .notice strong { color: #e6edf7; }
       label { display: block; font-size: 12px; color: #9ab; margin-top: 14px; }
-      input { width: 100%; padding: 9px 10px; margin-top: 4px; background: #131c2e; border: 1px solid #334; border-radius: 6px; color: #e6edf7; box-sizing: border-box; }
+      input { width: 100%; padding: 9px 10px; margin-top: 4px; background: #131c2e; border: 1px solid #334; border-radius: 6px; color: #e6edf7; box-sizing: border-box; font-family: ui-monospace, monospace; }
       button { margin-top: 18px; width: 100%; padding: 10px; background: #3b82f6; color: #fff; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; }
-      .err { color: #f87171; font-size: 12px; margin-top: 10px; }
+      button:disabled { opacity: 0.6; cursor: default; }
+      .err { color: #f87171; font-size: 12px; margin-top: 10px; min-height: 16px; }
     </style>
   </head>
   <body>
     <h1>Enroll this device</h1>
-    <p style="font-size:12px;color:#9ab;margin-top:-6px">Enter the enrollment token your administrator gave you.</p>
-    <label>Server URL</label>
-    <input id="server" value="http://localhost:4000" />
-    <label>Enrollment token</label>
-    <input id="token" placeholder="paste token" />
-    <div class="err" id="err"></div>
-    <button id="go">Enroll</button>
+    <p class="sub">Enter the enrollment token your administrator gave you.</p>
+    <div class="notice">
+      <strong>This is a company monitoring agent.</strong> After enrollment your employer can see work
+      activity from this device (apps, window titles, URLs, idle time and, if enabled, screenshots or
+      screen recordings). You will see the full notice before anything is collected, and a tray icon
+      stays visible while monitoring is active.
+    </div>
+    <form id="form">
+      <label for="server">Server URL</label>
+      <input id="server" autocomplete="off" spellcheck="false" />
+      <label for="token">Enrollment token</label>
+      <input id="token" placeholder="paste token" autocomplete="off" spellcheck="false" autofocus />
+      <div class="err" id="err" role="alert"></div>
+      <button id="go" type="submit">Enroll</button>
+    </form>
     <script>
       const err = document.getElementById("err");
-      document.getElementById("go").addEventListener("click", async () => {
+      const go = document.getElementById("go");
+      const server = document.getElementById("server");
+      const token = document.getElementById("token");
+      window.enroll.defaults().then((d) => { if (!server.value) server.value = d.serverUrl; });
+      document.getElementById("form").addEventListener("submit", async (e) => {
+        e.preventDefault();
         err.textContent = "";
-        const token = document.getElementById("token").value.trim();
-        const server = document.getElementById("server").value.trim();
-        if (!token) { err.textContent = "Token is required"; return; }
-        const res = await window.enroll.submit(token, server);
-        if (!res.ok) err.textContent = res.error || "Enrollment failed";
+        const t = token.value.trim();
+        const s = server.value.trim();
+        if (!s) { err.textContent = "Server URL is required"; return; }
+        if (!t) { err.textContent = "Token is required"; return; }
+        go.disabled = true;
+        go.textContent = "Enrolling…";
+        try {
+          const res = await window.enroll.submit(t, s);
+          if (!res.ok) err.textContent = res.error || "Enrollment failed";
+        } finally {
+          go.disabled = false;
+          go.textContent = "Enroll";
+        }
       });
     </script>
   </body>
