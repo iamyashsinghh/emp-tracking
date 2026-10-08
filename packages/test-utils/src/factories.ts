@@ -44,24 +44,16 @@ export function buildDevicePolicy(overrides: Partial<DevicePolicy> = {}): Device
 }
 
 export function buildTenantPolicy(overrides: Partial<TenantPolicy> = {}): TenantPolicy {
+  // Spread the contract defaults so new policy fields flow through without
+  // touching this factory; the return type catches any schema/contract drift.
   const p = buildDevicePolicy();
   return {
+    mediaRetentionDays: null,
+    ...p,
     id: fakeId("policy"),
     tenantId: overrides.tenantId ?? fakeId("tenant"),
-    monitoringEnabled: p.monitoringEnabled,
-    activityTrackingEnabled: p.activityTrackingEnabled,
-    activitySampleSeconds: p.activitySampleSeconds,
-    idleThresholdSeconds: p.idleThresholdSeconds,
-    screenshotsEnabled: p.screenshotsEnabled,
-    screenshotIntervalSeconds: p.screenshotIntervalSeconds,
-    screenshotBlur: p.screenshotBlur,
-    screenRecordingEnabled: p.screenRecordingEnabled,
-    recordingChunkSeconds: p.recordingChunkSeconds,
-    recordingFps: p.recordingFps,
-    showTrayIcon: p.showTrayIcon,
-    notifyEmployeeOnStart: p.notifyEmployeeOnStart,
-    workingHoursStart: null,
-    workingHoursEnd: null,
+    workingHoursStart: p.workingHoursStart ?? null,
+    workingHoursEnd: p.workingHoursEnd ?? null,
     updatedAt: fixedNow(),
     ...overrides,
   };

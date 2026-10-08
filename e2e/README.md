@@ -18,7 +18,7 @@ backend's log after the run.
 
 ## How it works
 
-- `setup/global-setup.ts` runs `prisma db push --force-reset`, starts
+- `setup/global-setup.ts` runs `prisma migrate reset` (all migrations), starts
   `apps/backend/dist/index.js`, and waits for `/health`.
 - `support/client.ts` is a small fetch client (`call`, `login`).
 - `support/db.ts` gives each spec a Prisma client for seeding with

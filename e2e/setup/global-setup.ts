@@ -6,7 +6,8 @@ import { testEnv } from "../../packages/test-utils/vitest.shared";
 
 /**
  * Boots the stack once for the whole e2e run:
- *   1. pushes the Prisma schema into a fresh database (DATABASE_URL),
+ *   1. resets DATABASE_URL and applies every Prisma migration (so the
+ *      migrations themselves are exercised, not just the schema),
  *   2. starts the built backend (apps/backend/dist) on E2E_PORT,
  *   3. waits for /health, and hands the base URL to tests via inject("apiUrl").
  *
@@ -53,8 +54,8 @@ export default async function setup({ provide }: GlobalSetupContext) {
 
   const env = { ...process.env, ...testEnv, DATABASE_URL: databaseUrl };
 
-  // Fresh schema every run. --force-reset drops all data, hence the throwaway DB.
-  execFileSync("npx", ["prisma", "db", "push", "--force-reset", "--skip-generate", "--accept-data-loss"], {
+  // Fresh schema every run. reset drops all data, hence the throwaway DB.
+  execFileSync("npx", ["prisma", "migrate", "reset", "--force", "--skip-seed", "--skip-generate"], {
     cwd: backendDir,
     env,
     stdio: "inherit",

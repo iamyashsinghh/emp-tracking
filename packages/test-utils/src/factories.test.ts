@@ -43,7 +43,7 @@ describe("factories match the shared contracts", () => {
     const row = buildTenantPolicy();
     const defaults = buildDevicePolicy();
     for (const [key, value] of Object.entries(defaults)) {
-      expect(row[key as keyof typeof row], key).toBe(value);
+      expect(row[key as keyof typeof row], key).toEqual(value);
     }
   });
 
