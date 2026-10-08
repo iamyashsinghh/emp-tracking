@@ -66,14 +66,29 @@ export const devicePolicySchema = z.object({
   // Length of each recorded chunk before it is uploaded and rotated.
   recordingChunkSeconds: z.number().int().min(30).max(3600).default(300),
   recordingFps: z.number().int().min(1).max(30).default(5),
+  // Target video bitrate for recordings, in kbps.
+  recordingBitrateKbps: z.number().int().min(100).max(50000).default(1500),
+
+  // --- Canonical capture controls (ONE agreed name each) -------------------
+  // Bind every consumer (tenants route, agent screenshot/recorder, dashboard
+  // settings) to exactly these fields.
+  // Apps (by process/app identifier) to skip entirely — no capture while foreground.
+  excludedApps: z.array(z.string()).default([]),
+  // Capture only the active window (true) or the whole screen (false).
+  activeWindowOnly: z.boolean().default(true),
+  // Max SCREENSHOTS per device per day (count); 0 = no cap.
+  screenshotDailyCap: z.number().int().min(0).default(0),
+  // Max screen-RECORDING MINUTES per device per day; 0 = no cap.
+  recordingDailyCapMinutes: z.number().int().min(0).default(0),
 
   // Transparency: the agent always shows it is running. These only tune how.
   showTrayIcon: z.boolean().default(true),
   notifyEmployeeOnStart: z.boolean().default(true),
 
-  // Only collect inside working hours (24h local time, HH:mm). Empty = always.
-  workingHoursStart: z.string().regex(/^\d{2}:\d{2}$/).optional(),
-  workingHoursEnd: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+  // Only collect inside working hours (24h local time, HH:mm).
+  // null/absent = always on; send null to clear a saved value.
+  workingHoursStart: z.string().regex(/^\d{2}:\d{2}$/).nullable().optional(),
+  workingHoursEnd: z.string().regex(/^\d{2}:\d{2}$/).nullable().optional(),
 });
 export type DevicePolicy = z.infer<typeof devicePolicySchema>;
 
