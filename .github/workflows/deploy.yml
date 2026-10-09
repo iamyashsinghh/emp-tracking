@@ -152,6 +152,11 @@ jobs:
             sed -i "/^$k=/d" .env
             echo "$k=${!k}" >> .env
           done
+          # Hosts set up before Postgres moved behind the `localdb` profile keep
+          # the bundled database unless they point at their own one.
+          if ! grep -q '^COMPOSE_PROFILES=' .env && ! grep -q '^DOCKER_DATABASE_URL=' .env; then
+            echo "COMPOSE_PROFILES=localdb" >> .env
+          fi
           if [ -n "$PUBLIC_API_URL" ]; then
             sed -i "/^PUBLIC_API_URL=/d" .env
             echo "PUBLIC_API_URL=$PUBLIC_API_URL" >> .env

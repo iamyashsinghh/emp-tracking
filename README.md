@@ -69,6 +69,15 @@ npm run dev:dashboard
 npm run dev:agent
 ```
 
+## Using an existing Postgres
+
+`docker compose` starts its own Postgres through the `localdb` profile
+(`COMPOSE_PROFILES=localdb` in `.env`). To use a Postgres that already runs on
+the host, set `COMPOSE_PROFILES=` (empty) and
+`DOCKER_DATABASE_URL=postgresql://<user>:<pass>@host.docker.internal:5432/<db>?schema=public`.
+The host Postgres must listen on the Docker bridge (`listen_addresses`) and
+allow `172.16.0.0/12` in `pg_hba.conf`.
+
 ## Media storage
 
 Screenshots and recordings are stored on disk by default:
