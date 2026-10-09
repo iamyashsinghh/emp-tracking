@@ -4,6 +4,7 @@ import Store from "electron-store";
 import activeWin from "active-win";
 import { DevicePolicy } from "@emptrack/shared";
 import { uploadMedia } from "./uploader";
+import { diagState, localClock } from "./diag";
 
 /**
  * Periodic screenshots driven by tenant policy.
@@ -98,8 +99,14 @@ export class Screenshotter {
   private async capture() {
     const p = this.policy;
     if (!p.monitoringEnabled || !p.screenshotsEnabled) return;
-    if (!withinWorkingHours(p)) return;
-    if (powerMonitor.getSystemIdleTime() >= p.idleThresholdSeconds) return;
+    if (!withinWorkingHours(p)) {
+      diagState("screenshot", "shot", `paused: device clock ${localClock()} is outside working hours ${p.workingHoursStart}-${p.workingHoursEnd}`);
+      return;
+    }
+    if (powerMonitor.getSystemIdleTime() >= p.idleThresholdSeconds) {
+      diagState("screenshot", "shot", "paused: user is idle");
+      return;
+    }
     if (!this.hasScreenPermission()) return;
 
     if (p.screenshotDailyCap > 0 && quotaUsedToday() >= p.screenshotDailyCap) return;
@@ -114,7 +121,16 @@ export class Screenshotter {
 
     const display = windowRect ? screen.getDisplayMatching(windowRect) : screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
     let image = await grabDisplay(display);
-    if (!image || image.isEmpty()) return;
+    if (!image || image.isEmpty()) {
+      diagState(
+        "screenshot",
+        "shot",
+        process.env.XDG_SESSION_TYPE === "wayland"
+          ? "screen capture returned nothing (Wayland session: use an X11/Xorg session)"
+          : "screen capture returned an empty image"
+      );
+      return;
+    }
 
     if (p.activeWindowOnly && windowRect) {
       const crop = cropRect(windowRect, display, image);
@@ -125,6 +141,7 @@ export class Screenshotter {
     if (p.screenshotBlur) image = blur(image);
 
     await uploadMedia("SCREENSHOT", "image/jpeg", image.toJPEG(JPEG_QUALITY));
+    diagState("screenshot", "shot", "capturing");
     // Count only successful uploads against the daily cap.
     incrementQuota();
   }

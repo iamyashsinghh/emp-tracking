@@ -4,6 +4,7 @@ import path from "path";
 import { app, Menu, MenuItemConstructorOptions, nativeImage, Notification, Tray } from "electron";
 import { DevicePolicy } from "@emptrack/shared";
 import { config } from "./config";
+import { diag, localClock } from "./diag";
 import { apiClient } from "./api";
 import { describeCollection, ensureConsent, needsConsent, showMonitoringNotice } from "./consent";
 import { runEnrollment } from "./enroll";
@@ -151,6 +152,12 @@ function isCapturing() {
 
 function startCapture() {
   if (isCapturing()) return;
+  diag(
+    "agent",
+    `capture started: server ${config.serverUrl}, ${process.platform}` +
+      (process.env.XDG_SESSION_TYPE ? ` (${process.env.XDG_SESSION_TYPE})` : "") +
+      `, device clock ${localClock()}, working hours ${policy.workingHoursStart ?? "any"}-${policy.workingHoursEnd ?? "any"}`
+  );
   tracker = new ActivityTracker(policy);
   shotter = new Screenshotter(policy);
   recorder = new ScreenRecorder(policy);
