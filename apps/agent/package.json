@@ -10,7 +10,8 @@
     "start": "electron .",
     "dist": "npm run build && electron-builder",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "dist:staging": "npm run build && node scripts/copy-assets.js --server-url=https://employee.staging.ashniva.com && electron-builder"
   },
   "dependencies": {
     "@emptrack/shared": "*",

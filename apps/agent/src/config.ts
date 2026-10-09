@@ -34,7 +34,18 @@ export interface ConsentScope {
   recording: boolean;
 }
 
-export const DEFAULT_SERVER_URL = process.env.EMPTRACK_SERVER_URL || "http://localhost:4002";
+/** Server URL baked in at build time by scripts/copy-assets.js, if any. */
+function builtInServerUrl(): string | undefined {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    return (require("./build-config.json") as { serverUrl?: string }).serverUrl || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export const DEFAULT_SERVER_URL =
+  process.env.EMPTRACK_SERVER_URL || builtInServerUrl() || "http://localhost:4002";
 
 const store = new Store<AgentState>({
   name: "emptrack-agent",

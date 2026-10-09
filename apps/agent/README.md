@@ -38,5 +38,9 @@ On first launch, paste the enrollment token printed by the backend seed (`npm ru
 ## Package installers
 
 ```bash
-npm run dist -w apps/agent       # electron-builder → dmg / nsis / AppImage
+npm run dist -w apps/agent           # electron-builder → dmg / nsis / AppImage
+npm run dist:staging -w apps/agent   # same, pre-filled with https://employee.staging.ashniva.com
 ```
+
+Any build can bake in its default server URL with `EMPTRACK_SERVER_URL=https://... npm run dist -w apps/agent`.
+Admins create the one-time enrollment token from **Dashboard → Employees → Add device**.
