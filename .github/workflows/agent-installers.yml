@@ -1,0 +1,52 @@
+name: Agent installers
+
+# Builds the desktop agent installers on each OS and attaches them to the run
+# (Actions → Agent installers → the run → Artifacts). The staging server URL is
+# pre-filled; override it with the `server_url` input on a manual run.
+
+on:
+  push:
+    branches: [staging]
+    paths:
+      - "apps/agent/**"
+      - "packages/shared/**"
+      - ".github/workflows/agent-installers.yml"
+  workflow_dispatch:
+    inputs:
+      server_url:
+        description: Server URL baked into the installers
+        default: https://employee.staging.ashniva.com
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Windows, os: windows-latest, target: --win nsis, files: "apps/agent/release/*.exe" }
+          - { name: macOS, os: macos-latest, target: --mac dmg, files: "apps/agent/release/*.dmg" }
+          - { name: Linux, os: ubuntu-latest, target: --linux AppImage, files: "apps/agent/release/*.AppImage" }
+    env:
+      EMPTRACK_SERVER_URL: ${{ inputs.server_url || 'https://employee.staging.ashniva.com' }}
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build -w packages/shared
+      - name: Build installer
+        working-directory: apps/agent
+        run: npm run build && npx electron-builder ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: emptrack-agent-${{ matrix.name }}
+          path: ${{ matrix.files }}
+          if-no-files-found: error

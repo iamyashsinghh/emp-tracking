@@ -42,5 +42,7 @@ npm run dist -w apps/agent           # electron-builder → dmg / nsis / AppImag
 npm run dist:staging -w apps/agent   # same, pre-filled with https://employee.staging.ashniva.com
 ```
 
+Installers are electron-builder output in `apps/agent/release/`. The **Agent installers** GitHub workflow builds the Windows `.exe`, macOS `.dmg` and Linux `.AppImage` on every agent change to `staging` (or on demand) and attaches them to the run.
+
 Any build can bake in its default server URL with `EMPTRACK_SERVER_URL=https://... npm run dist -w apps/agent`.
 Admins create the one-time enrollment token from **Dashboard → Employees → Add device**.
