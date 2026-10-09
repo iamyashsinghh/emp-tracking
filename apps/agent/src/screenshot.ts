@@ -117,7 +117,14 @@ export class Screenshotter {
     const windowRect = win ? toDipRect(win.bounds) : undefined;
     // In active-window mode we need to know which window that is; without it we
     // would fall back to a full screen grab the tenant did not ask for.
-    if (p.activeWindowOnly && !windowRect) return;
+    if (p.activeWindowOnly && !windowRect) {
+      diagState(
+        "screenshot",
+        "shot",
+        "skipped: \"Active window only\" is on but the active window can't be read (turn it off in Settings, or see the activity lines above)"
+      );
+      return;
+    }
 
     const display = windowRect ? screen.getDisplayMatching(windowRect) : screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
     let image = await grabDisplay(display);

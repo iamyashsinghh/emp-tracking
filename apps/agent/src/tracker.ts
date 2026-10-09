@@ -32,6 +32,8 @@ const MAX_BATCH = 500;
 const MAX_BUFFER = 10_000;
 const MAX_TITLE_LENGTH = 512;
 const MAX_URL_LENGTH = 2048;
+/** App name recorded for active time when the foreground window can't be read. */
+export const UNKNOWN_APP = "Unknown";
 
 export interface ForegroundSample {
   appName: string;
@@ -227,20 +229,22 @@ export class ActivityTracker {
     const activeSeconds = clampActiveSeconds(now - this.lastSampleAt, this.sampleSeconds);
     this.lastSampleAt = now;
 
-    let fg: Awaited<ReturnType<typeof readForeground>>;
+    let fg: Awaited<ReturnType<typeof readForeground>> = null;
     try {
       fg = await readForeground();
+      diagState(
+        "activity",
+        "activity.foreground",
+        fg ? "reading active window OK" : "cannot read active window: no window reported"
+      );
     } catch (err) {
-      // Missing macOS permission or no X11 display; try again next tick.
+      // Missing macOS permission, Wayland, or no X11 tools; try again next tick.
       diagState("activity", "activity.foreground", `cannot read active window: ${foregroundHint(err)}`);
-      return;
     }
-    if (!fg) {
-      diagState("activity", "activity.foreground", "cannot read active window: no window reported");
-      return;
-    }
-    diagState("activity", "activity.foreground", "reading active window OK");
-    if (isExcludedApp(fg, this.policy.excludedApps)) return;
+    // The employee is active (not idle) even when the OS won't name the
+    // window, so the time still counts, attributed to an unknown app.
+    if (!fg) fg = { appName: UNKNOWN_APP };
+    else if (isExcludedApp(fg, this.policy.excludedApps)) return;
 
     this.push("APP_ACTIVE", {
       appName: fg.appName,
