@@ -93,6 +93,7 @@ export function useTopSites(
 const NAV = [
   { href: "/dashboard", label: "Overview" },
   { href: "/dashboard/devices", label: "Devices" },
+  { href: "/dashboard/employees", label: "Employees" },
   { href: "/dashboard/activity", label: "Activity" },
   { href: "/dashboard/settings", label: "Settings" },
 ];
