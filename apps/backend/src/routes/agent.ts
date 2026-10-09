@@ -7,6 +7,22 @@ export const agentRouter = Router();
 
 const DEFAULT_POLICY: DevicePolicy = devicePolicySchema.parse({});
 
+/**
+ * Everything the dashboard saved, in the shape the agent reads. Copies every
+ * field the shared schema knows, so a new policy setting reaches devices
+ * without touching this route (a hand-written list here once dropped
+ * activeWindowOnly, excludedApps and the daily caps, and agents silently ran on
+ * the defaults).
+ */
+export function policyFromRow(row: Record<string, unknown>): DevicePolicy {
+  const picked: Record<string, unknown> = {};
+  for (const key of Object.keys(devicePolicySchema.shape)) {
+    // null means "not set" in the database; the schema default applies.
+    if (row[key] !== null && row[key] !== undefined) picked[key] = row[key];
+  }
+  return devicePolicySchema.parse(picked);
+}
+
 // First run: the agent exchanges its one-time enrollment token for a
 // long-lived device token. The token is invalidated after use.
 agentRouter.post("/enroll", async (req, res) => {
@@ -45,24 +61,7 @@ agentRouter.get("/config", requireDevice, async (req, res) => {
     data: { lastSeenAt: new Date() },
   });
 
-  const policy: DevicePolicy = policyRow
-    ? devicePolicySchema.parse({
-        monitoringEnabled: policyRow.monitoringEnabled,
-        activityTrackingEnabled: policyRow.activityTrackingEnabled,
-        activitySampleSeconds: policyRow.activitySampleSeconds,
-        idleThresholdSeconds: policyRow.idleThresholdSeconds,
-        screenshotsEnabled: policyRow.screenshotsEnabled,
-        screenshotIntervalSeconds: policyRow.screenshotIntervalSeconds,
-        screenshotBlur: policyRow.screenshotBlur,
-        screenRecordingEnabled: policyRow.screenRecordingEnabled,
-        recordingChunkSeconds: policyRow.recordingChunkSeconds,
-        recordingFps: policyRow.recordingFps,
-        showTrayIcon: policyRow.showTrayIcon,
-        notifyEmployeeOnStart: policyRow.notifyEmployeeOnStart,
-        workingHoursStart: policyRow.workingHoursStart ?? undefined,
-        workingHoursEnd: policyRow.workingHoursEnd ?? undefined,
-      })
-    : DEFAULT_POLICY;
+  const policy: DevicePolicy = policyRow ? policyFromRow(policyRow) : DEFAULT_POLICY;
 
   res.json({
     deviceId: req.device!.deviceId,

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // End-to-end media smoke test against a running, seeded stack:
-// admin login -> enroll a device -> agent uploads a screenshot through the
+// admin login -> enroll a device -> agent gets the saved policy and its
+// activity shows in reports -> agent uploads a screenshot through the
 // signed upload URL -> confirm -> dashboard lists it -> bytes download intact
 // -> admin deletes it.
 //
@@ -45,6 +46,36 @@ const enrolled = await json("/api/agent/enroll", {
   body: JSON.stringify({ enrollmentToken, hostname: "smoke-test", platform: "linux" }),
 });
 step(`device enrolled (${enrolled.deviceId})`);
+
+// The device must get exactly the policy the dashboard saved.
+// Flip a non-default setting first so a dropped field can't pass by luck.
+const before = await json("/api/tenants/policy", { token: admin });
+const put = (body) => json("/api/tenants/policy", { method: "PUT", token: admin, body: JSON.stringify(body) });
+await put({ activeWindowOnly: !before.activeWindowOnly, excludedApps: ["smoke-app"] });
+const saved = await json("/api/tenants/policy", { token: admin });
+const { policy } = await json("/api/agent/config", { token: enrolled.token });
+await put({ activeWindowOnly: before.activeWindowOnly, excludedApps: before.excludedApps });
+for (const k of Object.keys(policy)) {
+  if (JSON.stringify(policy[k]) !== JSON.stringify(saved[k] ?? undefined)) {
+    throw new Error(`agent policy ${k}=${JSON.stringify(policy[k])} but dashboard saved ${JSON.stringify(saved[k])}`);
+  }
+}
+step("agent policy matches the dashboard settings");
+
+// Activity the agent sends shows up in the dashboard's activity report.
+const clientEventId = crypto.randomUUID();
+await json("/api/agent/activity", {
+  method: "POST",
+  token: enrolled.token,
+  body: JSON.stringify({
+    events: [{ clientEventId, type: "APP_ACTIVE", capturedAt: new Date().toISOString(), appName: "Unknown", activeSeconds: 10 }],
+  }),
+});
+const activity = await json(`/api/reports/activity?deviceId=${enrolled.deviceId}`, { token: admin });
+if (!activity.some((e) => e.clientEventId === clientEventId && e.type === "APP_ACTIVE")) {
+  throw new Error("sent activity missing from /api/reports/activity");
+}
+step("activity reaches the dashboard report");
 
 const up = await json("/api/agent/media/upload-url", {
   method: "POST",
