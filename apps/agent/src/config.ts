@@ -34,7 +34,7 @@ export interface ConsentScope {
   recording: boolean;
 }
 
-export const DEFAULT_SERVER_URL = process.env.EMPTRACK_SERVER_URL || "http://localhost:4000";
+export const DEFAULT_SERVER_URL = process.env.EMPTRACK_SERVER_URL || "http://localhost:4002";
 
 const store = new Store<AgentState>({
   name: "emptrack-agent",

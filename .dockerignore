@@ -10,3 +10,5 @@
 !.env.example
 apps/agent/release
 coverage
+storage
+**/storage

@@ -30,7 +30,7 @@ queries are scoped by the caller's tenant for hard isolation. Roles:
 
 1. Admin creates a company, adds employees, and issues a one-time **enrollment token** per device.
 2. The **agent** redeems the token for a long-lived device token, then shows the employee a monitoring notice.
-3. The agent samples activity + idle, takes screenshots, and (if enabled) records the screen, uploading media straight to S3/MinIO via presigned URLs.
+3. The agent samples activity + idle, takes screenshots, and (if enabled) records the screen, uploading media through short-lived signed URLs to the backend's local storage folder (or S3/MinIO with `STORAGE_DRIVER=s3`).
 4. The **dashboard** reads per-company activity summaries, timelines, screenshots and recordings.
 5. Monitoring **policy** (intervals in seconds, recording on/off, blur, working hours) is set per company and pushed to agents, which re-poll every 60s.
 
@@ -38,7 +38,7 @@ queries are scoped by the caller's tenant for hard isolation. Roles:
 
 ```bash
 cp .env.example .env            # adjust secrets
-docker compose up -d --build    # postgres + minio + backend + dashboard
+docker compose up -d --build    # postgres + backend (port 4002) + dashboard
 
 # first run only: apply schema + seed a demo company
 docker compose exec backend npm run prisma:deploy -w apps/backend
@@ -46,8 +46,7 @@ docker compose exec backend npm run seed -w apps/backend
 ```
 
 - Dashboard: http://localhost:3000  (admin@demo.co / admin12345)
-- API:       http://localhost:4000/health
-- MinIO console: http://localhost:9001 (minioadmin / minioadmin)
+- API:       http://localhost:4002/health
 
 The seed prints an **enrollment token** — use it to enroll the agent.
 
@@ -57,7 +56,8 @@ The seed prints an **enrollment token** — use it to enroll the agent.
 npm install
 npm run build:shared
 
-# backend (needs Postgres + MinIO running; `docker compose up -d postgres minio`)
+# backend on :4002 (needs Postgres running; `docker compose up -d postgres`)
+# media is written to ./storage (STORAGE_DIR)
 npm run prisma:migrate -w apps/backend
 npm run prisma:seed -w apps/backend
 npm run dev:backend
@@ -68,6 +68,27 @@ npm run dev:dashboard
 # agent
 npm run dev:agent
 ```
+
+## Media storage
+
+Screenshots and recordings are stored on disk by default:
+
+| Env var          | Default                 | Meaning |
+|------------------|-------------------------|---------|
+| `STORAGE_DRIVER` | `local`                 | `local` = files on disk, `s3` = S3/MinIO via the `S3_*` vars |
+| `STORAGE_DIR`    | `./storage`             | Root folder; each company gets its own `<tenantId>/` subfolder |
+| `PUBLIC_API_URL` | `http://localhost:4002` | Public backend URL used to build the signed upload/download links |
+
+The agent PUTs bytes to `/api/storage/<signed-token>` and the dashboard loads
+them from the same kind of link, so nothing else needs to be exposed. In
+Docker the folder is the `mediadata` volume. Retention (`MEDIA_RETENTION_DAYS`
+or the per-company setting) deletes old files from the folder.
+
+To use S3/MinIO instead: set `STORAGE_DRIVER=s3` and the `S3_*` vars, and for
+the bundled MinIO run `docker compose --profile s3 up -d`.
+
+`scripts/smoke-media.mjs` runs the whole upload → store → view flow against a
+seeded stack (`API_URL=http://localhost:4002 node scripts/smoke-media.mjs`).
 
 ## API surface
 

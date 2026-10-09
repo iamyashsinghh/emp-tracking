@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 import { env } from "./env";
-import { ensureBucket } from "./storage";
+import { ensureStorage, storageDriverName, storageRouter } from "./storage";
 import { authRouter } from "./routes/auth";
 import { tenantsRouter } from "./routes/tenants";
 import { usersRouter } from "./routes/users";
@@ -32,13 +32,16 @@ app.use("/api/users", usersRouter);
 app.use("/api/reports", reportsRouter);
 app.use("/api/media", mediaAdminRouter);
 
+// Signed upload/download links for the local storage driver
+app.use("/api/storage", storageRouter);
+
 // Desktop agent API
 app.use("/api/agent", agentRouter);
 app.use("/api/agent/activity", activityRouter);
 app.use("/api/agent/media", mediaRouter);
 
 async function main() {
-  await ensureBucket().catch((e) => console.warn("[storage] bucket init skipped:", e.message));
+  await ensureStorage().catch((e) => console.warn(`[storage] ${storageDriverName} init skipped:`, e.message));
   app.listen(env.port, () => {
     console.log(`[backend] listening on http://localhost:${env.port} (${env.nodeEnv})`);
   });

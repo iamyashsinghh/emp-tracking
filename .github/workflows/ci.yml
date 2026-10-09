@@ -47,7 +47,7 @@ jobs:
       - name: Build dashboard
         run: npm run build -w apps/dashboard
         env:
-          NEXT_PUBLIC_API_URL: http://localhost:4000
+          NEXT_PUBLIC_API_URL: http://localhost:4002
       - name: Build agent
         run: npm run build -w apps/agent
 
@@ -63,15 +63,16 @@ jobs:
         run: SEED=true docker compose up -d --wait --wait-timeout 180
       - name: Probe endpoints
         run: |
-          curl -fsS http://localhost:4000/health
+          curl -fsS http://localhost:4002/health
           curl -fsS -o /dev/null -w "dashboard /login -> %{http_code}\n" http://localhost:3000/login
-          curl -fsS http://localhost:9000/minio/health/live
       - name: Login with seeded admin
         run: |
-          curl -fsS -X POST http://localhost:4000/api/auth/login \
+          curl -fsS -X POST http://localhost:4002/api/auth/login \
             -H 'Content-Type: application/json' \
             -d '{"email":"admin@demo.co","password":"admin12345"}' -o /dev/null -w "login -> %{http_code}\n" \
             || echo "::warning::seeded admin login did not return 2xx (route or payload may differ)"
+      - name: Media upload -> local storage -> download
+        run: API_URL=http://localhost:4002 node scripts/smoke-media.mjs
       - name: Dump logs on failure
         if: failure()
         run: docker compose ps -a && docker compose logs --no-color
