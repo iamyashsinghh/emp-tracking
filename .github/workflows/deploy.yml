@@ -10,7 +10,9 @@ name: Deploy
 # Environment secrets:   DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY,
 #                        DEPLOY_PATH (optional, default ~/emp-tracking)
 # Environment variables: NEXT_PUBLIC_API_URL (public API URL baked into the
-#                        dashboard bundle)
+#                        dashboard bundle; also written to the host .env as
+#                        PUBLIC_API_URL for media links unless PUBLIC_API_URL
+#                        is set separately)
 # The host keeps its own .env (secrets, DB password, S3 keys) next to the
 # compose files; this workflow only updates the image tags in it.
 
@@ -89,7 +91,7 @@ jobs:
           file: apps/dashboard/Dockerfile
           push: true
           build-args: |
-            NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL || 'http://localhost:4000' }}
+            NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL || 'http://localhost:4002' }}
           tags: |
             ${{ steps.names.outputs.dashboard }}:${{ steps.names.outputs.tag }}
             ${{ steps.names.outputs.dashboard }}:${{ github.ref_name }}
@@ -136,10 +138,12 @@ jobs:
           BACKEND_IMAGE: ${{ needs.images.outputs.backend }}:${{ needs.images.outputs.tag }}
           BACKEND_MIGRATE_IMAGE: ${{ needs.images.outputs.migrate }}:${{ needs.images.outputs.tag }}
           DASHBOARD_IMAGE: ${{ needs.images.outputs.dashboard }}:${{ needs.images.outputs.tag }}
+          PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL || vars.NEXT_PUBLIC_API_URL }}
         run: |
           ssh -i ~/.ssh/id_deploy "$DEPLOY_USER@$DEPLOY_HOST" \
             "DEPLOY_PATH=$DEPLOY_PATH GHCR_USER=$GHCR_USER GHCR_TOKEN=$GHCR_TOKEN \
              BACKEND_IMAGE=$BACKEND_IMAGE BACKEND_MIGRATE_IMAGE=$BACKEND_MIGRATE_IMAGE DASHBOARD_IMAGE=$DASHBOARD_IMAGE \
+             PUBLIC_API_URL='$PUBLIC_API_URL' \
              bash -s" <<'REMOTE'
           set -euo pipefail
           cd "$DEPLOY_PATH"
@@ -148,6 +152,10 @@ jobs:
             sed -i "/^$k=/d" .env
             echo "$k=${!k}" >> .env
           done
+          if [ -n "$PUBLIC_API_URL" ]; then
+            sed -i "/^PUBLIC_API_URL=/d" .env
+            echo "PUBLIC_API_URL=$PUBLIC_API_URL" >> .env
+          fi
           echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
           compose="docker compose -f docker-compose.yml -f docker-compose.prod.yml"
           $compose pull

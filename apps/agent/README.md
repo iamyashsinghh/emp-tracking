@@ -29,7 +29,7 @@ npm run build:shared
 npm run dev -w apps/agent        # builds + launches Electron
 ```
 
-On first launch, paste the enrollment token printed by the backend seed (`npm run prisma:seed`) and point it at `http://localhost:4000`.
+On first launch, paste the enrollment token printed by the backend seed (`npm run prisma:seed`) and point it at `http://localhost:4002`.
 
 ### macOS permissions
 

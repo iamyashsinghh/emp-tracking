@@ -57,7 +57,10 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends openssl ca-certificates tini \
  && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production \
-    BACKEND_PORT=4000
+    BACKEND_PORT=4002 \
+    STORAGE_DIR=/app/storage
+# Local media storage folder; docker-compose mounts a volume here.
+RUN mkdir -p /app/storage && chown node:node /app/storage
 COPY --from=prod-deps --chown=node:node /app/node_modules ./node_modules
 # Generated Prisma client (engine + types) from the build stage.
 COPY --from=build --chown=node:node /app/node_modules/.prisma ./node_modules/.prisma
@@ -68,8 +71,8 @@ COPY --from=build --chown=node:node /app/apps/backend/dist ./apps/backend/dist
 COPY --from=build --chown=node:node /app/apps/backend/prisma ./apps/backend/prisma
 USER node
 WORKDIR /app/apps/backend
-EXPOSE 4000
+EXPOSE 4002
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
-  CMD node -e "fetch('http://127.0.0.1:'+(process.env.BACKEND_PORT||4000)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.BACKEND_PORT||4002)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "dist/index.js"]

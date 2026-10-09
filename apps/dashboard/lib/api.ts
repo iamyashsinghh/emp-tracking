@@ -17,7 +17,7 @@
 
 import { useSyncExternalStore } from "react";
 
-export const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+export const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4002";
 
 /** Header the backend reads to scope a SUPER_ADMIN request to one tenant. */
 export const TENANT_HEADER = "X-Tenant-Id";

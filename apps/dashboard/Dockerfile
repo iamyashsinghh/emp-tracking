@@ -17,7 +17,7 @@ RUN --mount=type=cache,target=/root/.npm \
     npm ci -w apps/dashboard --include-workspace-root
 
 FROM deps AS build
-ARG NEXT_PUBLIC_API_URL=http://localhost:4000
+ARG NEXT_PUBLIC_API_URL=http://localhost:4002
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL} \
     NEXT_TELEMETRY_DISABLED=1
 COPY tsconfig.base.json ./

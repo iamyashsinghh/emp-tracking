@@ -4,8 +4,9 @@
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 #
 # Images come from GHCR (set BACKEND_IMAGE / BACKEND_MIGRATE_IMAGE /
-# DASHBOARD_IMAGE in the host's .env). Postgres and MinIO are not published
-# on host ports; put a TLS reverse proxy in front of backend/dashboard/minio.
+# DASHBOARD_IMAGE in the host's .env). Postgres is not published on host
+# ports; put a TLS reverse proxy in front of backend/dashboard. Media is kept
+# in the `mediadata` volume unless STORAGE_DRIVER=s3 (then also run --profile s3).
 
 services:
   postgres:
@@ -15,7 +16,8 @@ services:
       options: { max-size: "10m", max-file: "5" }
 
   minio:
-    # Bound to localhost for a reverse proxy: agents upload to presigned URLs.
+    # Only with STORAGE_DRIVER=s3. Bound to localhost for a reverse proxy:
+    # agents upload to presigned URLs.
     ports: !override
       - "127.0.0.1:${MINIO_PORT:-9000}:9000"
     logging: *logging
@@ -29,10 +31,10 @@ services:
     build: !reset null
     pull_policy: always
     environment:
-      # Must be the public MinIO/S3 URL: agents upload to presigned URLs on this host.
-      S3_PUBLIC_URL: ${S3_PUBLIC_URL:?set S3_PUBLIC_URL to the externally reachable MinIO/S3 URL}
+      # Must be the public API URL: agents upload media to signed links on this host.
+      PUBLIC_API_URL: ${PUBLIC_API_URL:?set PUBLIC_API_URL to the externally reachable backend URL}
     ports: !override
-      - "127.0.0.1:${BACKEND_PORT:-4000}:4000"
+      - "127.0.0.1:${BACKEND_PORT:-4002}:4002"
     logging: *logging
 
   dashboard:

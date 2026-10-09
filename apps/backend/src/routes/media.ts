@@ -44,8 +44,8 @@ function extFor(kind: string, contentType: string): string {
 
 export const mediaRouter = Router();
 
-// Agent requests a presigned PUT, uploads bytes straight to object storage,
-// then confirms. The server never proxies the media bytes.
+// Agent requests a signed upload URL, PUTs the bytes to it (the local storage
+// folder via /api/storage, or S3 directly when STORAGE_DRIVER=s3), then confirms.
 mediaRouter.post("/upload-url", requireDevice, async (req, res) => {
   const parsed = mediaUploadRequestSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
@@ -76,7 +76,7 @@ mediaRouter.post("/upload-url", requireDevice, async (req, res) => {
   const day = captured.toISOString().slice(0, 10);
   const ext = extFor(kind, contentTypeBase);
   const nonce = crypto.randomBytes(4).toString("hex");
-  // Tenant-prefixed keys keep each company's objects isolated in the bucket.
+  // Tenant-prefixed keys keep each company's files in its own folder / bucket prefix.
   const key = `${device.tenantId}/${device.id}/${kind.toLowerCase()}/${day}/${captured.getTime()}-${nonce}.${ext}`;
 
   const asset = await prisma.mediaAsset.create({
@@ -92,7 +92,7 @@ mediaRouter.post("/upload-url", requireDevice, async (req, res) => {
     },
   });
 
-  const { uploadUrl, requiredHeaders } = await presignUpload(key, contentTypeBase);
+  const { uploadUrl, requiredHeaders } = await presignUpload(key, contentTypeBase, 60 * 10, MAX_BYTES[kind]);
   res.json({ mediaId: asset.id, uploadUrl, requiredHeaders });
 });
 
