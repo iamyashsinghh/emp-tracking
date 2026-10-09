@@ -1,4 +1,8 @@
 # Local / single-host stack: Postgres + backend API + dashboard.
+# The bundled Postgres runs under the `localdb` profile (on by default via
+# COMPOSE_PROFILES=localdb in .env). To use a Postgres you already run on the
+# host instead, drop that profile and set DOCKER_DATABASE_URL, e.g.
+#   DOCKER_DATABASE_URL=postgresql://user:pass@host.docker.internal:5432/emptrack?schema=public
 # Screenshots/recordings are stored on disk in the `mediadata` volume
 # (STORAGE_DRIVER=local). For S3/MinIO instead: set STORAGE_DRIVER=s3 and
 # start MinIO with `docker compose --profile s3 up -d`.
@@ -13,7 +17,7 @@
 x-backend-env: &backend-env
   NODE_ENV: production
   BACKEND_PORT: 4002
-  DATABASE_URL: postgresql://${POSTGRES_USER:-emptrack}:${POSTGRES_PASSWORD:-emptrack}@postgres:5432/${POSTGRES_DB:-emptrack}?schema=public
+  DATABASE_URL: ${DOCKER_DATABASE_URL:-postgresql://${POSTGRES_USER:-emptrack}:${POSTGRES_PASSWORD:-emptrack}@postgres:5432/${POSTGRES_DB:-emptrack}?schema=public}
   JWT_SECRET: ${JWT_SECRET:-change-me-in-production-please}
   JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
   CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
@@ -30,6 +34,7 @@ x-backend-env: &backend-env
 services:
   postgres:
     image: postgres:16-alpine
+    profiles: ["localdb"]
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-emptrack}
@@ -78,9 +83,13 @@ services:
       target: build
     image: ${BACKEND_MIGRATE_IMAGE:-emptrack-backend-migrate:local}
     restart: "no"
+    # Lets the containers reach a Postgres running on the host machine.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
+        required: false
     environment:
       <<: *backend-env
       SEED: ${SEED:-false}
@@ -92,9 +101,13 @@ services:
       target: runtime
     image: ${BACKEND_IMAGE:-emptrack-backend:local}
     restart: unless-stopped
+    # Lets the containers reach a Postgres running on the host machine.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
+        required: false
       migrate:
         condition: service_completed_successfully
     environment: *backend-env
