@@ -1,5 +1,6 @@
 import { MediaKind } from "@emptrack/shared";
 import { apiClient, ApiError } from "./api";
+import { diag, diagState } from "./diag";
 
 /**
  * Media upload pipeline for screenshots and screen recordings.
@@ -153,16 +154,14 @@ export class MediaUploadQueue {
   private async process(item: QueueItem): Promise<void> {
     try {
       await this.upload(item);
+      diagState("upload", "upload", "uploading OK");
     } catch (err) {
       item.attempts++;
+      diagState("upload", "upload", `upload failing: ${(err as Error).message}`);
       const permanent = err instanceof ApiError && !err.retryable;
       if (permanent || item.attempts >= this.opts.maxAttempts) {
         this.dropped++;
-        console.warn(
-          `[uploader] dropping ${item.kind} after ${item.attempts} attempt(s): ${
-            (err as Error).message
-          }`
-        );
+        diag("upload", `dropping ${item.kind} after ${item.attempts} attempt(s): ${(err as Error).message}`);
         return;
       }
       // Back off, then put it back at the head so order is roughly preserved.

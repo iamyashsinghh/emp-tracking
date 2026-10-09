@@ -3,6 +3,7 @@ import { v4 as uuid } from "uuid";
 import activeWin from "active-win";
 import { ActivityEvent, DevicePolicy } from "@emptrack/shared";
 import { apiClient } from "./api";
+import { diagState, localClock } from "./diag";
 
 /**
  * Cross-platform foreground activity tracker.
@@ -111,6 +112,18 @@ async function readForeground(): Promise<(ForegroundSample & { path?: string }) 
   };
 }
 
+/** Turns an active-win failure into an actionable message. */
+export function foregroundHint(err: unknown): string {
+  const msg = (err as Error)?.message ?? String(err);
+  if (process.platform === "linux") {
+    if (process.env.XDG_SESSION_TYPE === "wayland") {
+      return `${msg} (Wayland session: log in with an X11/Xorg session instead)`;
+    }
+    if (/ENOENT|xprop|xwininfo/i.test(msg)) return `${msg} (install x11-utils: sudo apt install x11-utils)`;
+  }
+  return msg;
+}
+
 export class ActivityTracker {
   private sampleTimer: NodeJS.Timeout | null = null;
   private flushTimer: NodeJS.Timeout | null = null;
@@ -191,11 +204,20 @@ export class ActivityTracker {
   private async sample() {
     const now = Date.now();
     if (!this.collecting()) {
+      const p = this.policy;
+      diagState(
+        "activity",
+        "activity.collecting",
+        !p.monitoringEnabled || !p.activityTrackingEnabled
+          ? "paused: activity tracking is off in policy"
+          : `paused: device clock ${localClock()} is outside working hours ${p.workingHoursStart}-${p.workingHoursEnd}`
+      );
       if (this.idle) this.setIdle(false);
       this.lastSampleAt = now;
       return;
     }
 
+    diagState("activity", "activity.collecting", "collecting");
     const idleSecs = powerMonitor.getSystemIdleTime();
     this.setIdle(this.away || idleSecs >= this.policy.idleThresholdSeconds);
     if (this.idle) return;
@@ -208,11 +230,16 @@ export class ActivityTracker {
     let fg: Awaited<ReturnType<typeof readForeground>>;
     try {
       fg = await readForeground();
-    } catch {
+    } catch (err) {
       // Missing macOS permission or no X11 display; try again next tick.
+      diagState("activity", "activity.foreground", `cannot read active window: ${foregroundHint(err)}`);
       return;
     }
-    if (!fg) return;
+    if (!fg) {
+      diagState("activity", "activity.foreground", "cannot read active window: no window reported");
+      return;
+    }
+    diagState("activity", "activity.foreground", "reading active window OK");
     if (isExcludedApp(fg, this.policy.excludedApps)) return;
 
     this.push("APP_ACTIVE", {
@@ -242,7 +269,9 @@ export class ActivityTracker {
         const batch = this.buffer.slice(0, MAX_BATCH);
         try {
           await apiClient.sendActivity(batch);
-        } catch {
+          diagState("activity", "activity.flush", "sending activity OK");
+        } catch (err) {
+          diagState("activity", "activity.flush", `sending activity failing: ${(err as Error).message}`);
           // Keep the batch buffered and retry on the next flush tick.
           return;
         }
